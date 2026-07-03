@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 
 _APP_DIR = os.path.join(
     os.environ.get("APPDATA") or os.path.expanduser("~"), "YouTubeDownloader"
@@ -63,21 +64,34 @@ def load_history() -> list[dict]:
         return []
 
 
-def add_history(entry: dict) -> None:
-    """
-    다운로드 시도 1건을 내역 맨 앞에 추가한다.
-    entry 예시 키: url, title, filename, kind, ext, quality, status('성공'/'실패'),
-                  message, timestamp(문자열)
-    """
-    history = load_history()
-    history.insert(0, entry)
-    del history[_HISTORY_LIMIT:]
+def _save_history(history: list[dict]) -> None:
     try:
         _ensure_dir()
         with open(_HISTORY_PATH, "w", encoding="utf-8") as fp:
             json.dump(history, fp, ensure_ascii=False, indent=2)
     except OSError:
         pass
+
+
+def add_history(entry: dict) -> None:
+    """
+    다운로드 시도 1건을 내역 맨 앞에 추가한다. 고유 id를 자동 부여한다.
+    entry 예시 키: url, title, filename, kind, ext, quality, status('성공'/'실패'),
+                  message, timestamp(문자열)
+    """
+    entry.setdefault("id", uuid.uuid4().hex)
+    history = load_history()
+    history.insert(0, entry)
+    del history[_HISTORY_LIMIT:]
+    _save_history(history)
+
+
+def delete_history(entry_id: str) -> None:
+    """id가 일치하는 내역 1건을 삭제한다."""
+    if not entry_id:
+        return
+    history = [e for e in load_history() if e.get("id") != entry_id]
+    _save_history(history)
 
 
 def clear_history() -> None:

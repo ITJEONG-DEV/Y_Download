@@ -201,38 +201,51 @@ class DownloadRow(ctk.CTkFrame):
             w.configure(state=state)
 
 
-class HistoryWindow(ctk.CTkToplevel):
-    """다운로드 내역(성공/실패) 조회 창. 항목 더블클릭 시 목록에 재추가."""
+class HistoryPanel(ctk.CTkFrame):
+    """다운로드 내역(성공/실패) 우측 사이드 패널. 더블클릭 재추가 / 단일·전체 삭제."""
 
-    def __init__(self, app: "App"):
-        super().__init__(app)
+    def __init__(self, master, app: "App", width: int = 320):
+        super().__init__(master, width=width)
         self.app = app
-        self.title("다운로드 내역")
-        self.geometry("640x480")
+        self.pack_propagate(False)  # 고정 폭 유지
 
         header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=12, pady=(12, 4))
+        header.pack(fill="x", padx=8, pady=(8, 2))
         ctk.CTkLabel(
-            header, text="항목을 더블클릭하면 다운로드 목록에 다시 추가됩니다.",
+            header, text="다운로드 내역",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(side="left")
+        ctk.CTkButton(
+            header, text="✕", width=28, fg_color="transparent",
+            text_color=("gray30", "gray70"), hover_color=("gray80", "gray30"),
+            command=self.app.toggle_history,
+        ).pack(side="right")
+
+        toolbar = ctk.CTkFrame(self, fg_color="transparent")
+        toolbar.pack(fill="x", padx=8, pady=(0, 4))
+        ctk.CTkLabel(
+            toolbar, text="더블클릭 시 목록에 추가",
             text_color=("gray40", "gray60"),
         ).pack(side="left")
-        ctk.CTkButton(header, text="내역 지우기", width=90, command=self._clear).pack(side="right")
+        ctk.CTkButton(
+            toolbar, text="전체 지우기", width=84, command=self._clear_all
+        ).pack(side="right")
 
         self.list_frame = ctk.CTkScrollableFrame(self)
-        self.list_frame.pack(fill="both", expand=True, padx=12, pady=(4, 12))
+        self.list_frame.pack(fill="both", expand=True, padx=8, pady=(4, 8))
 
-        self._render()
+        self.render()
 
-    def _render(self):
+    def render(self):
         for child in self.list_frame.winfo_children():
             child.destroy()
 
         history = config.load_history()
         if not history:
             ctk.CTkLabel(
-                self.list_frame, text="다운로드 내역이 없습니다.",
+                self.list_frame, text="내역이 없습니다.",
                 text_color=("gray50", "gray50"),
-            ).pack(pady=30)
+            ).pack(pady=24)
             return
 
         for entry in history:
@@ -241,44 +254,56 @@ class HistoryWindow(ctk.CTkToplevel):
     def _make_row(self, entry: dict):
         ok = entry.get("status") == "성공"
         row = ctk.CTkFrame(self.list_frame, fg_color=("gray92", "gray18"))
-        row.pack(fill="x", padx=4, pady=3)
+        row.pack(fill="x", padx=2, pady=3)
+
+        # 단일 삭제 버튼 (우측)
+        ctk.CTkButton(
+            row, text="✕", width=24, fg_color="transparent",
+            text_color=("gray40", "gray60"), hover_color=("gray80", "gray30"),
+            command=lambda i=entry.get("id"): self._delete(i),
+        ).pack(side="right", padx=(0, 4), pady=4)
+
+        text_area = ctk.CTkFrame(row, fg_color="transparent")
+        text_area.pack(side="left", fill="x", expand=True, padx=(6, 0), pady=4)
 
         icon = "✅" if ok else "❌"
         color = ("green", "#4caf50") if ok else ("red", "#e57373")
         line1 = ctk.CTkLabel(
-            row, text=f"{icon}  {entry.get('title', '(제목 없음)')}",
-            anchor="w", justify="left", text_color=color,
+            text_area, text=f"{icon}  {entry.get('title', '(제목 없음)')}",
+            anchor="w", justify="left", text_color=color, wraplength=210,
         )
-        line1.pack(fill="x", padx=8, pady=(6, 0))
+        line1.pack(fill="x")
 
         detail = (
-            f"{entry.get('timestamp', '')}  ·  "
+            f"{entry.get('timestamp', '')} · "
             f"{entry.get('kind', '')}/{entry.get('ext', '')} "
             f"{entry.get('quality', '')}"
         )
         msg = entry.get("message")
         if msg:
-            detail += f"  ·  {msg}"
+            detail += f"\n{msg}"
         line2 = ctk.CTkLabel(
-            row, text=detail, anchor="w", justify="left",
-            text_color=("gray40", "gray60"),
+            text_area, text=detail, anchor="w", justify="left",
+            text_color=("gray40", "gray60"), wraplength=210,
         )
-        line2.pack(fill="x", padx=8, pady=(0, 6))
+        line2.pack(fill="x")
 
-        # 더블클릭 → 재추가 (프레임/라벨 모두에 바인딩)
+        # 더블클릭 → 재추가
         url = entry.get("url")
-        for w in (row, line1, line2):
+        for w in (text_area, line1, line2):
             w.bind("<Double-Button-1>", lambda e, u=url: self._readd(u))
 
     def _readd(self, url: str | None):
-        if not url:
-            return
-        self.app.add_url(url)
-        self.app.focus()
+        if url:
+            self.app.add_url(url)
 
-    def _clear(self):
+    def _delete(self, entry_id: str | None):
+        config.delete_history(entry_id)
+        self.render()
+
+    def _clear_all(self):
         config.clear_history()
-        self._render()
+        self.render()
 
 
 class App(ctk.CTk):
@@ -290,7 +315,8 @@ class App(ctk.CTk):
 
         self.rows: list[DownloadRow] = []
         self._downloading = False
-        self._history_win: HistoryWindow | None = None
+        self.history_panel: HistoryPanel | None = None
+        self._history_visible = False
         default_dir = os.path.join(os.path.expanduser("~"), "Downloads")
         self.download_dir = config.get_download_dir(default_dir)
 
@@ -298,8 +324,18 @@ class App(ctk.CTk):
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
+        # 좌우 분할: 왼쪽=메인 콘텐츠, 오른쪽=내역 패널(토글)
+        self.body = ctk.CTkFrame(self, fg_color="transparent")
+        self.body.pack(fill="both", expand=True)
+
+        left = ctk.CTkFrame(self.body, fg_color="transparent")
+        left.pack(side="left", fill="both", expand=True)
+
+        # 내역 패널 미리 생성(초기엔 숨김)
+        self.history_panel = HistoryPanel(self.body, self)
+
         # --- URL 입력 영역 ---
-        url_frame = ctk.CTkFrame(self)
+        url_frame = ctk.CTkFrame(left)
         url_frame.pack(fill="x", padx=16, pady=(16, 8))
         url_frame.columnconfigure(0, weight=1)
 
@@ -315,12 +351,12 @@ class App(ctk.CTk):
         self.add_btn.grid(row=0, column=1, padx=4, pady=8)
 
         self.history_btn = ctk.CTkButton(
-            url_frame, text="다운로드 내역", width=110, command=self.on_history
+            url_frame, text="다운로드 내역", width=110, command=self.toggle_history
         )
         self.history_btn.grid(row=0, column=2, padx=(4, 8), pady=8)
 
         # --- 목록 (스크롤 영역) ---
-        self.list_frame = ctk.CTkScrollableFrame(self, label_text="다운로드 목록")
+        self.list_frame = ctk.CTkScrollableFrame(left, label_text="다운로드 목록")
         self.list_frame.pack(fill="both", expand=True, padx=16, pady=8)
 
         self.empty_label = ctk.CTkLabel(
@@ -330,7 +366,7 @@ class App(ctk.CTk):
         self.empty_label.pack(pady=40)
 
         # --- 저장 위치 (일괄) ---
-        dir_frame = ctk.CTkFrame(self)
+        dir_frame = ctk.CTkFrame(left)
         dir_frame.pack(fill="x", padx=16, pady=8)
         dir_frame.columnconfigure(1, weight=1)
 
@@ -343,7 +379,7 @@ class App(ctk.CTk):
         )
 
         # --- 다운로드 버튼 + 진행률 ---
-        bottom = ctk.CTkFrame(self, fg_color="transparent")
+        bottom = ctk.CTkFrame(left, fg_color="transparent")
         bottom.pack(fill="x", padx=16, pady=(4, 12))
         bottom.columnconfigure(0, weight=1)
 
@@ -356,7 +392,7 @@ class App(ctk.CTk):
         )
         self.download_btn.grid(row=0, column=1)
 
-        self.status_label = ctk.CTkLabel(self, text="대기 중", anchor="w")
+        self.status_label = ctk.CTkLabel(left, text="대기 중", anchor="w")
         self.status_label.pack(fill="x", padx=16, pady=(0, 8))
 
     # ------------------------------------------------------ 이벤트 핸들러
@@ -412,12 +448,15 @@ class App(ctk.CTk):
             self.download_dir = path
             config.set_download_dir(path)  # 선택한 위치 기억
 
-    def on_history(self):
-        if self._history_win is not None and self._history_win.winfo_exists():
-            self._history_win.focus()
-            self._history_win._render()
-            return
-        self._history_win = HistoryWindow(self)
+    def toggle_history(self):
+        """우측 내역 패널을 열고 닫는다."""
+        if self._history_visible:
+            self.history_panel.pack_forget()
+            self._history_visible = False
+        else:
+            self.history_panel.render()
+            self.history_panel.pack(side="right", fill="y", padx=(0, 8), pady=8)
+            self._history_visible = True
 
     def on_download_all(self):
         if self._downloading:
@@ -512,9 +551,9 @@ class App(ctk.CTk):
         for row in self.rows:
             row.set_controls_enabled(True)
         self._set_status(f"완료: {success}/{total}개 다운로드됨")
-        # 내역 창이 열려 있으면 갱신
-        if self._history_win is not None and self._history_win.winfo_exists():
-            self._history_win._render()
+        # 내역 패널이 열려 있으면 갱신
+        if self._history_visible and self.history_panel is not None:
+            self.history_panel.render()
 
     # -------------------------------------------------------------- 유틸
     def _load_thumbnail(self, url: str):

@@ -790,7 +790,7 @@ class App(ctk.CTk):
             thumb = self._load_thumbnail(info.thumbnail_url)
             self.after(0, lambda: self._on_add_done(info, thumb))
         except Exception as e:
-            self.after(0, lambda: self._on_add_error(e))
+            self.after(0, lambda e=e: self._on_add_error(e))
 
     def _on_add_done(self, info: VideoInfo, thumb):
         if self.empty_label.winfo_exists():

@@ -64,9 +64,26 @@ AUDIO_BITRATES = ["320", "256", "192", "128"]
 HISTORY_PANEL_WIDTH = 320
 HISTORY_PANEL_GAP = 16
 
-# 창 최소 크기
+# 창 최소/기본 크기
 MIN_WINDOW_WIDTH = 820
 MIN_WINDOW_HEIGHT = 580
+DEFAULT_WINDOW_WIDTH = 880
+DEFAULT_WINDOW_HEIGHT = 660
+
+
+def _virtual_screen_bounds():
+    """모든 모니터를 포함하는 가상 데스크톱 경계 (vx, vy, vw, vh). 실패 시 None."""
+    try:
+        import ctypes
+        u = ctypes.windll.user32
+        return (
+            u.GetSystemMetrics(76),  # SM_XVIRTUALSCREEN
+            u.GetSystemMetrics(77),  # SM_YVIRTUALSCREEN
+            u.GetSystemMetrics(78),  # SM_CXVIRTUALSCREEN
+            u.GetSystemMetrics(79),  # SM_CYVIRTUALSCREEN
+        )
+    except Exception:
+        return None
 
 
 def _quality_label(h: int) -> str:
@@ -370,31 +387,98 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title(f"Y_Downloader-{__version__}")
-        self.geometry("880x660")
         self.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
 
         self.rows: list[DownloadRow] = []
         self._downloading = False
         self.history_panel: HistoryPanel | None = None
         self._history_visible = False
+        self._normal_geom = None  # 패널 닫힘·비최대화 상태의 기본 창 위치/크기
         default_dir = os.path.join(os.path.expanduser("~"), "Downloads")
         self.download_dir = config.get_download_dir(default_dir)
 
         self._build_ui()
 
+        # 지난 세션의 창 위치/크기 복원(없거나 화면 밖이면 주모니터 중앙 기본 크기)
+        self._restore_geometry()
+
         # 리사이즈는 디바운스로 한 번만 반영(이벤트 폭주로 인한 지연 방지)
         self._resize_after = None
         self.bind("<Configure>", self._on_window_configure)
+        # 닫을 때 창 상태 저장
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # 실행 시 업데이트 확인 (패키지 빌드에서만; 개발 실행은 건너뜀)
         if updater.build_kind() != "dev":
             self.after(1500, self._start_update_check)
+
+    # ------------------------------------------------- 창 위치/크기 기억
+    def _restore_geometry(self):
+        win = config.get_window()
+        if win and self._geometry_valid(win.get("x"), win.get("y"), win.get("w"), win.get("h")):
+            self.geometry(f"{win['w']}x{win['h']}+{win['x']}+{win['y']}")
+            self._normal_geom = (win["x"], win["y"], win["w"], win["h"])
+            if win.get("zoomed"):
+                self.after(60, lambda: self.state("zoomed"))
+        else:
+            self._center_default()
+
+    def _center_default(self):
+        """주모니터(1번) 정중앙에 기본 크기로."""
+        self.update_idletasks()
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        w, h = DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT
+        x = max(0, (sw - w) // 2)
+        y = max(0, (sh - h) // 2)
+        self.geometry(f"{w}x{h}+{x}+{y}")
+        self._normal_geom = (x, y, w, h)
+
+    def _geometry_valid(self, x, y, w, h) -> bool:
+        """저장된 창이 현재 모니터 배치 안에서 충분히 보이고 잡을 수 있는지."""
+        if None in (x, y, w, h):
+            return False
+        if w < MIN_WINDOW_WIDTH or h < MIN_WINDOW_HEIGHT:
+            return False
+        b = _virtual_screen_bounds()
+        if not b:
+            return True  # 판정 불가하면 그대로 사용
+        vx, vy, vw, vh = b
+        # 창과 가상 데스크톱의 겹침 면적이 창의 50% 이상
+        ix = max(0, min(x + w, vx + vw) - max(x, vx))
+        iy = max(0, min(y + h, vy + vh) - max(y, vy))
+        if ix * iy < 0.5 * w * h:
+            return False
+        # 타이틀바(상단)가 화면 안에 있어 드래그 가능한지
+        if y < vy or y > vy + vh - 40:
+            return False
+        return True
+
+    def _save_geometry(self):
+        try:
+            g = self._normal_geom or (
+                self.winfo_x(), self.winfo_y(), self.winfo_width(), self.winfo_height()
+            )
+            config.set_window({
+                "x": g[0], "y": g[1], "w": g[2], "h": g[3],
+                "zoomed": self.state() == "zoomed",
+            })
+        except Exception:
+            pass
+
+    def _on_close(self):
+        self._save_geometry()
+        self.destroy()
 
     # ------------------------------------------------- 반응형(디바운스)
     def _on_window_configure(self, event):
         # 창 자체의 크기 변경만 처리(자식 위젯 이벤트 무시)
         if event.widget is not self:
             return
+        # 패널 닫힘 + 비최대화 상태의 '기본' 위치/크기를 기억(복원 기준)
+        if not self._history_visible and self.state() != "zoomed":
+            self._normal_geom = (
+                self.winfo_x(), self.winfo_y(), self.winfo_width(), self.winfo_height()
+            )
         if self._resize_after is not None:
             self.after_cancel(self._resize_after)
         self._resize_after = self.after(120, self._apply_responsive_layout)
@@ -478,6 +562,7 @@ class App(ctk.CTk):
 
     def _quit_for_update(self):
         # 도우미 배치가 종료를 기다리고 있으므로 앱을 닫으면 교체가 진행된다.
+        self._save_geometry()
         self.destroy()
 
     # ------------------------------------------------------------------ UI

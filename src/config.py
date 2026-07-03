@@ -53,6 +53,18 @@ def set_download_dir(path: str) -> None:
     save_settings(data)
 
 
+def get_window() -> dict | None:
+    """마지막 창 위치/크기/최대화 상태({x,y,w,h,zoomed}) 또는 None."""
+    win = load_settings().get("window")
+    return win if isinstance(win, dict) else None
+
+
+def set_window(win: dict) -> None:
+    data = load_settings()
+    data["window"] = win
+    save_settings(data)
+
+
 # --------------------------------------------------------------- 내역
 def load_history() -> list[dict]:
     """최신 항목이 앞(index 0)에 오도록 반환."""

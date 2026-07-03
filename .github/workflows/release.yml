@@ -20,6 +20,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # 주석 태그 메시지(%(contents)) 읽기 위해 전체 히스토리+태그 필요
+          fetch-tags: true
 
       - name: Setup Python
         uses: actions/setup-python@v5

@@ -43,6 +43,10 @@ class VideoInfo:
     uploader: str
     # 영상 다운로드 시 선택 가능한 해상도 목록 (예: [1080, 720, 480, 360])
     available_heights: list[int] = field(default_factory=list)
+    # 해상도(height) -> 비디오 스트림 예상 크기(bytes). 크기 추정에 사용
+    video_size_by_height: dict[int, int] = field(default_factory=dict)
+    # bestaudio 예상 크기(bytes). 영상 병합 및 음원 추출 추정에 사용
+    best_audio_size: int = 0
 
     @property
     def duration_str(self) -> str:
@@ -107,22 +111,92 @@ def fetch_info(url: str) -> VideoInfo:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
 
-    # 사용 가능한 해상도 추출 (중복 제거 후 내림차순)
-    heights = set()
+    duration = int(info.get("duration") or 0)
+
+    # 포맷을 훑어 해상도 목록 + 크기 추정 데이터 구성
+    heights: set[int] = set()
+    video_size_by_height: dict[int, int] = {}
+    best_audio_size = 0
     for f in info.get("formats", []):
+        has_video = f.get("vcodec") not in (None, "none")
+        has_audio = f.get("acodec") not in (None, "none")
+        size = _stream_size(f, duration)
+
         h = f.get("height")
-        if h and f.get("vcodec") not in (None, "none"):
-            heights.add(int(h))
-    available = sorted(heights, reverse=True)
+        if h and has_video:
+            h = int(h)
+            heights.add(h)
+            if size:
+                # 같은 해상도 중 가장 큰(고화질) 스트림 크기를 대표값으로
+                video_size_by_height[h] = max(video_size_by_height.get(h, 0), size)
+        elif has_audio and not has_video:
+            # 오디오 전용 스트림 중 가장 큰 것을 bestaudio 근사치로
+            if size:
+                best_audio_size = max(best_audio_size, size)
 
     return VideoInfo(
         url=url,
         title=info.get("title", "제목 없음"),
         thumbnail_url=info.get("thumbnail", ""),
-        duration=int(info.get("duration") or 0),
+        duration=duration,
         uploader=info.get("uploader", ""),
-        available_heights=available,
+        available_heights=sorted(heights, reverse=True),
+        video_size_by_height=video_size_by_height,
+        best_audio_size=best_audio_size,
     )
+
+
+def _stream_size(f: dict, duration: int) -> Optional[int]:
+    """포맷 하나의 예상 크기(bytes). filesize가 없으면 비트레이트×길이로 추정."""
+    s = f.get("filesize") or f.get("filesize_approx")
+    if s:
+        return int(s)
+    tbr = f.get("tbr")  # kbps
+    if tbr and duration:
+        return int(tbr * 1000 / 8 * duration)
+    return None
+
+
+def estimate_size(
+    info: VideoInfo, *, kind: str, max_height: Optional[int], audio_bitrate: str
+) -> Optional[int]:
+    """선택한 포맷/품질 기준 예상 파일 크기(bytes). 추정 불가 시 None."""
+    if kind == "audio":
+        # mp3 등: 비트레이트(kbps) × 길이(s) / 8
+        try:
+            br = int(audio_bitrate)
+        except (TypeError, ValueError):
+            return info.best_audio_size or None
+        if info.duration:
+            return int(br * 1000 / 8 * info.duration)
+        return info.best_audio_size or None
+
+    # video: 선택 해상도 이하 중 가장 높은 해상도의 비디오 + bestaudio
+    if not info.video_size_by_height:
+        return None
+    if max_height:
+        candidates = [h for h in info.available_heights if h <= max_height]
+        h = max(candidates) if candidates else min(info.available_heights)
+    else:
+        h = max(info.available_heights) if info.available_heights else None
+    if h is None:
+        return None
+    vsize = info.video_size_by_height.get(h)
+    if not vsize:
+        return None
+    return vsize + info.best_audio_size
+
+
+def format_size(num_bytes: Optional[int]) -> str:
+    """bytes를 사람이 읽기 쉬운 문자열로 (예: '45.3 MB'). None이면 '알 수 없음'."""
+    if not num_bytes:
+        return "알 수 없음"
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{size:.1f} GB"
 
 
 # ---------------------------------------------------------------------------

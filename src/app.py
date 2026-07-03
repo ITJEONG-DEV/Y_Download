@@ -5,9 +5,10 @@ CustomTkinter 기반 데스크톱 GUI. 진입점.
 
 동작 개요:
 1) URL 입력 후 [목록에 추가] -> 조회 후 목록(큐)에 항목이 추가됨
-2) 각 항목마다 파일명 / 확장자 / 포맷(영상·음원) / 품질을 개별 설정
-3) 저장 위치는 하단에서 일괄(공통) 설정
+2) 각 항목마다 파일명 / 확장자 / 포맷(영상·음원) / 품질을 개별 설정 (예상 크기 표시)
+3) 저장 위치는 하단에서 일괄(공통) 설정 — 마지막 위치를 기억함
 4) [전체 다운로드] -> 목록의 모든 항목을 순차 다운로드
+5) [다운로드 내역] -> 성공/실패 기록 확인, 항목 더블클릭 시 목록에 재추가
 
 무거운 작업(조회/다운로드)은 별도 스레드에서 실행하여 GUI가 멈추지 않게 한다.
 """
@@ -17,17 +18,21 @@ from __future__ import annotations
 import io
 import os
 import threading
+from datetime import datetime
 from tkinter import filedialog
 
 import customtkinter as ctk
 import requests
 from PIL import Image
 
+import config
 from downloader import (
     VideoInfo,
     fetch_info,
     download,
     sanitize_filename,
+    estimate_size,
+    format_size,
     VIDEO_EXTS,
     AUDIO_EXTS,
 )
@@ -70,13 +75,13 @@ class DownloadRow(ctk.CTkFrame):
 
         # 제목 + 길이
         title_text = info.title
-        if len(title_text) > 60:
-            title_text = title_text[:60] + "…"
+        if len(title_text) > 55:
+            title_text = title_text[:55] + "…"
         self.title_label = ctk.CTkLabel(
             self, text=f"{title_text}   ({info.duration_str})",
             anchor="w", justify="left",
         )
-        self.title_label.grid(row=0, column=1, columnspan=4, sticky="w", padx=6, pady=(8, 2))
+        self.title_label.grid(row=0, column=1, columnspan=5, sticky="w", padx=6, pady=(8, 2))
 
         # 삭제 버튼
         self.remove_btn = ctk.CTkButton(
@@ -84,11 +89,11 @@ class DownloadRow(ctk.CTkFrame):
             text_color=("gray30", "gray70"), hover_color=("gray80", "gray30"),
             command=lambda: self._on_remove(self),
         )
-        self.remove_btn.grid(row=0, column=5, padx=(0, 6), pady=(8, 2))
+        self.remove_btn.grid(row=0, column=6, padx=(0, 6), pady=(8, 2))
 
         # 파일명 입력 + 확장자
         ctk.CTkLabel(self, text="파일명:").grid(row=1, column=1, sticky="w", padx=6)
-        self.name_entry = ctk.CTkEntry(self, width=260)
+        self.name_entry = ctk.CTkEntry(self, width=240)
         self.name_entry.insert(0, sanitize_filename(info.title))
         self.name_entry.grid(row=1, column=2, sticky="w", padx=4)
 
@@ -104,12 +109,18 @@ class DownloadRow(ctk.CTkFrame):
         self.kind_menu.grid(row=2, column=2, sticky="w", padx=4, pady=(0, 8))
 
         ctk.CTkLabel(self, text="품질:").grid(row=2, column=3, sticky="e", padx=(8, 2), pady=(0, 8))
-        self.quality_menu = ctk.CTkOptionMenu(self, values=["최고"], width=130)
+        self.quality_menu = ctk.CTkOptionMenu(
+            self, values=["최고"], width=130, command=lambda _=None: self._update_estimate()
+        )
         self.quality_menu.grid(row=2, column=4, sticky="w", padx=(0, 6), pady=(0, 8))
+
+        # 예상 크기
+        self.size_label = ctk.CTkLabel(self, text="예상: -", text_color=("gray40", "gray60"))
+        self.size_label.grid(row=2, column=5, sticky="w", padx=6, pady=(0, 8))
 
         # 상태 표시(항목별)
         self.status_label = ctk.CTkLabel(self, text="대기", anchor="w", text_color=("gray40", "gray60"))
-        self.status_label.grid(row=2, column=5, sticky="w", padx=6, pady=(0, 8))
+        self.status_label.grid(row=2, column=6, sticky="w", padx=6, pady=(0, 8))
 
         self._apply_video_options()
 
@@ -129,12 +140,22 @@ class DownloadRow(ctk.CTkFrame):
             labels = ["최고"]
         self.quality_menu.configure(values=labels)
         self.quality_menu.set(labels[0])
+        self._update_estimate()
 
     def _apply_audio_options(self):
         self.ext_menu.configure(values=AUDIO_EXTS)
         self.ext_menu.set(AUDIO_EXTS[0])
         self.quality_menu.configure(values=AUDIO_BITRATES)
         self.quality_menu.set("192")
+        self._update_estimate()
+
+    def _update_estimate(self):
+        p = self.get_params()
+        size = estimate_size(
+            self.info, kind=p["kind"], max_height=p["max_height"],
+            audio_bitrate=p["audio_bitrate"],
+        )
+        self.size_label.configure(text=f"예상: {format_size(size)}")
 
     # 현재 항목의 다운로드 파라미터 추출
     def get_params(self) -> dict:
@@ -155,6 +176,9 @@ class DownloadRow(ctk.CTkFrame):
             params["max_height"] = int(digits) if digits else None
         return params
 
+    def quality_text(self) -> str:
+        return self.quality_menu.get()
+
     def set_status(self, text: str, color=None):
         self.status_label.configure(text=text)
         if color:
@@ -167,16 +191,98 @@ class DownloadRow(ctk.CTkFrame):
             w.configure(state=state)
 
 
+class HistoryWindow(ctk.CTkToplevel):
+    """다운로드 내역(성공/실패) 조회 창. 항목 더블클릭 시 목록에 재추가."""
+
+    def __init__(self, app: "App"):
+        super().__init__(app)
+        self.app = app
+        self.title("다운로드 내역")
+        self.geometry("640x480")
+
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.pack(fill="x", padx=12, pady=(12, 4))
+        ctk.CTkLabel(
+            header, text="항목을 더블클릭하면 다운로드 목록에 다시 추가됩니다.",
+            text_color=("gray40", "gray60"),
+        ).pack(side="left")
+        ctk.CTkButton(header, text="내역 지우기", width=90, command=self._clear).pack(side="right")
+
+        self.list_frame = ctk.CTkScrollableFrame(self)
+        self.list_frame.pack(fill="both", expand=True, padx=12, pady=(4, 12))
+
+        self._render()
+
+    def _render(self):
+        for child in self.list_frame.winfo_children():
+            child.destroy()
+
+        history = config.load_history()
+        if not history:
+            ctk.CTkLabel(
+                self.list_frame, text="다운로드 내역이 없습니다.",
+                text_color=("gray50", "gray50"),
+            ).pack(pady=30)
+            return
+
+        for entry in history:
+            self._make_row(entry)
+
+    def _make_row(self, entry: dict):
+        ok = entry.get("status") == "성공"
+        row = ctk.CTkFrame(self.list_frame, fg_color=("gray92", "gray18"))
+        row.pack(fill="x", padx=4, pady=3)
+
+        icon = "✅" if ok else "❌"
+        color = ("green", "#4caf50") if ok else ("red", "#e57373")
+        line1 = ctk.CTkLabel(
+            row, text=f"{icon}  {entry.get('title', '(제목 없음)')}",
+            anchor="w", justify="left", text_color=color,
+        )
+        line1.pack(fill="x", padx=8, pady=(6, 0))
+
+        detail = (
+            f"{entry.get('timestamp', '')}  ·  "
+            f"{entry.get('kind', '')}/{entry.get('ext', '')} "
+            f"{entry.get('quality', '')}"
+        )
+        msg = entry.get("message")
+        if msg:
+            detail += f"  ·  {msg}"
+        line2 = ctk.CTkLabel(
+            row, text=detail, anchor="w", justify="left",
+            text_color=("gray40", "gray60"),
+        )
+        line2.pack(fill="x", padx=8, pady=(0, 6))
+
+        # 더블클릭 → 재추가 (프레임/라벨 모두에 바인딩)
+        url = entry.get("url")
+        for w in (row, line1, line2):
+            w.bind("<Double-Button-1>", lambda e, u=url: self._readd(u))
+
+    def _readd(self, url: str | None):
+        if not url:
+            return
+        self.app.add_url(url)
+        self.app.focus()
+
+    def _clear(self):
+        config.clear_history()
+        self._render()
+
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("YouTube Downloader")
-        self.geometry("820x640")
-        self.minsize(760, 560)
+        self.geometry("880x660")
+        self.minsize(820, 580)
 
         self.rows: list[DownloadRow] = []
         self._downloading = False
-        self.download_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+        self._history_win: HistoryWindow | None = None
+        default_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+        self.download_dir = config.get_download_dir(default_dir)
 
         self._build_ui()
 
@@ -196,7 +302,12 @@ class App(ctk.CTk):
         self.add_btn = ctk.CTkButton(
             url_frame, text="목록에 추가", width=110, command=self.on_add
         )
-        self.add_btn.grid(row=0, column=1, padx=(4, 8), pady=8)
+        self.add_btn.grid(row=0, column=1, padx=4, pady=8)
+
+        self.history_btn = ctk.CTkButton(
+            url_frame, text="다운로드 내역", width=110, command=self.on_history
+        )
+        self.history_btn.grid(row=0, column=2, padx=(4, 8), pady=8)
 
         # --- 목록 (스크롤 영역) ---
         self.list_frame = ctk.CTkScrollableFrame(self, label_text="다운로드 목록")
@@ -244,8 +355,13 @@ class App(ctk.CTk):
         if not url:
             self._set_status("URL을 입력하세요.")
             return
+        self.url_entry.delete(0, "end")
+        self.add_url(url)
+
+    def add_url(self, url: str):
+        """URL을 조회해 목록에 추가 (on_add 및 내역 재추가에서 공용)."""
         self.add_btn.configure(state="disabled", text="조회 중...")
-        self._set_status("영상 정보를 조회하는 중...")
+        self._set_status(f"영상 정보를 조회하는 중... {url}")
         threading.Thread(target=self._add_worker, args=(url,), daemon=True).start()
 
     def _add_worker(self, url: str):
@@ -262,7 +378,6 @@ class App(ctk.CTk):
         row = DownloadRow(self.list_frame, info, thumb, self._remove_row)
         row.pack(fill="x", padx=4, pady=4)
         self.rows.append(row)
-        self.url_entry.delete(0, "end")
         self.add_btn.configure(state="normal", text="목록에 추가")
         self._set_status(f"추가됨: {info.title}  (총 {len(self.rows)}개)")
 
@@ -284,6 +399,15 @@ class App(ctk.CTk):
         if path:
             self.dir_entry.delete(0, "end")
             self.dir_entry.insert(0, path)
+            self.download_dir = path
+            config.set_download_dir(path)  # 선택한 위치 기억
+
+    def on_history(self):
+        if self._history_win is not None and self._history_win.winfo_exists():
+            self._history_win.focus()
+            self._history_win._render()
+            return
+        self._history_win = HistoryWindow(self)
 
     def on_download_all(self):
         if self._downloading:
@@ -295,6 +419,7 @@ class App(ctk.CTk):
         if not out_dir:
             self._set_status("저장 위치를 선택하세요.")
             return
+        config.set_download_dir(out_dir)  # 다운로드 시점의 위치도 기억
 
         self._downloading = True
         self.download_btn.configure(state="disabled", text="다운로드 중...")
@@ -303,8 +428,16 @@ class App(ctk.CTk):
             row.set_controls_enabled(False)
             row.set_status("대기", color=("gray40", "gray60"))
 
-        # 각 항목의 파라미터를 미리 추출(스레드에서 위젯 접근 방지)
-        jobs = [(row, row.get_params()) for row in self.rows]
+        # 각 항목의 정보를 미리 추출(스레드에서 위젯 접근 방지)
+        jobs = [
+            {
+                "row": row,
+                "params": row.get_params(),
+                "title": row.info.title,
+                "quality": row.quality_text(),
+            }
+            for row in self.rows
+        ]
         threading.Thread(
             target=self._download_all_worker, args=(jobs, out_dir), daemon=True
         ).start()
@@ -312,20 +445,42 @@ class App(ctk.CTk):
     def _download_all_worker(self, jobs, out_dir):
         total = len(jobs)
         success = 0
-        for idx, (row, params) in enumerate(jobs, start=1):
+        for idx, job in enumerate(jobs, start=1):
+            row, params = job["row"], job["params"]
             self.after(0, lambda r=row: r.set_status("다운로드 중...", color=("#1f6aa5", "#5aa0d6")))
             self.after(0, lambda i=idx: self._set_status(f"[{i}/{total}] 다운로드 중..."))
             self.after(0, lambda: self.progress.set((idx - 1) / total))
+
+            status, message = "성공", ""
             try:
                 def hook(d, r=row, i=idx):
                     self._item_progress(d, r, i, total)
-                download(out_dir=out_dir, progress_callback=hook, **params)
+                download(output_dir=out_dir, progress_callback=hook, **params)
                 success += 1
                 self.after(0, lambda r=row: r.set_status("완료 ✓", color=("green", "#4caf50")))
             except Exception as e:
-                msg = str(e)
-                self.after(0, lambda r=row, m=msg: r.set_status(f"실패: {m[:30]}", color=("red", "#e57373")))
+                status, message = "실패", str(e)
+                self.after(0, lambda r=row, m=message: r.set_status("실패", color=("red", "#e57373")))
+                self.after(0, lambda m=message: self._set_status(f"실패: {m}"))
+
+            # 내역 기록 (성공/실패 모두)
+            self._record_history(job, params, status, message)
+
         self.after(0, lambda: self._on_all_done(success, total))
+
+    def _record_history(self, job, params, status, message):
+        entry = {
+            "url": params["url"],
+            "title": job["title"],
+            "filename": params["filename"] or "(제목)",
+            "kind": "음원" if params["kind"] == "audio" else "영상",
+            "ext": params["ext"],
+            "quality": job["quality"],
+            "status": status,
+            "message": message[:120],
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+        config.add_history(entry)
 
     def _item_progress(self, d: dict, row: DownloadRow, idx: int, total: int):
         if d.get("status") == "downloading":
@@ -334,7 +489,6 @@ class App(ctk.CTk):
             if tb:
                 frac = db / tb
                 self.after(0, lambda: row.set_status(f"{frac*100:.0f}%", color=("#1f6aa5", "#5aa0d6")))
-                # 전체 진행률 = 완료된 항목 + 현재 항목 진행분
                 overall = ((idx - 1) + frac) / total
                 self.after(0, lambda: self.progress.set(overall))
         elif d.get("status") == "finished":
@@ -348,6 +502,9 @@ class App(ctk.CTk):
         for row in self.rows:
             row.set_controls_enabled(True)
         self._set_status(f"완료: {success}/{total}개 다운로드됨")
+        # 내역 창이 열려 있으면 갱신
+        if self._history_win is not None and self._history_win.winfo_exists():
+            self._history_win._render()
 
     # -------------------------------------------------------------- 유틸
     def _load_thumbnail(self, url: str):

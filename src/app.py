@@ -94,6 +94,32 @@ def _quality_label(h: int) -> str:
     return HEIGHT_LABELS.get(h, f"{h}p")
 
 
+def _clamp_text(text: str, font, width: int, max_lines: int = 2) -> str:
+    """text를 width(px) 안에서 max_lines 줄로 자르고, 넘치면 마지막 줄에 …을 붙인다."""
+    text = (text or "").replace("\n", " ")
+    lines: list[str] = []
+    cur = ""
+    idx, n = 0, len(text)
+    while idx < n:
+        ch = text[idx]
+        if cur and font.measure(cur + ch) > width:
+            lines.append(cur)
+            cur = ""
+            if len(lines) == max_lines:
+                break
+        else:
+            cur += ch
+            idx += 1
+    if len(lines) < max_lines and cur:
+        lines.append(cur)
+    if idx < n and lines:  # 남은 글자가 있으면 잘림 → 마지막 줄에 …
+        last = lines[-1]
+        while last and font.measure(last + "…") > width:
+            last = last[:-1]
+        lines[-1] = last + "…"
+    return "\n".join(lines)
+
+
 class DownloadRow(ctk.CTkFrame):
     """목록의 한 항목. 자체 위젯과 상태(VideoInfo)를 가진다."""
 
@@ -275,6 +301,9 @@ class HistoryPanel(ctk.CTkFrame):
         super().__init__(master, width=width)
         self.app = app
         self.pack_propagate(False)  # 고정 폭 유지
+        self._expanded: set[str] = set()      # 펼쳐진 항목 id
+        self.item_font = ctk.CTkFont(size=12)  # 2줄 말줄임 계산용
+        self._clamp_w = 240                    # 접힘 상태 텍스트 폭(px)
 
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=8, pady=(8, 2))
@@ -291,7 +320,7 @@ class HistoryPanel(ctk.CTkFrame):
         toolbar = ctk.CTkFrame(self, fg_color="transparent")
         toolbar.pack(fill="x", padx=8, pady=(0, 4))
         ctk.CTkLabel(
-            toolbar, text="더블클릭 시 목록에 추가",
+            toolbar, text="항목을 클릭하면 펼쳐집니다",
             text_color=("gray40", "gray60"),
         ).pack(side="left")
         ctk.CTkButton(
@@ -331,48 +360,72 @@ class HistoryPanel(ctk.CTkFrame):
     def _make_row(self, entry: dict):
         ok = entry.get("status") == "성공"
         color = ("green", "#4caf50") if ok else ("red", "#e57373")
+        eid = entry.get("id")
+        expanded = eid in self._expanded
+
         row = ctk.CTkFrame(self.list_frame, fg_color=("gray92", "gray18"))
         row.pack(fill="x", padx=2, pady=3)
 
-        # 단일 삭제 (휴지통) 버튼 — 우측
-        ctk.CTkButton(
-            row, text="🗑", width=28, fg_color="transparent",
-            text_color=("gray40", "gray60"), hover_color=("gray80", "gray30"),
-            command=lambda i=entry.get("id"): self._delete(i),
-        ).pack(side="right", padx=(0, 4), pady=4)
-
         text_area = ctk.CTkFrame(row, fg_color="transparent")
-        text_area.pack(side="left", fill="x", expand=True, padx=(6, 0), pady=4)
+        text_area.pack(fill="x", padx=8, pady=(6, 4))
 
-        # 1줄: 파일명 (영상명) 성공여부
         status_txt = "성공" if ok else "실패"
-        filename = entry.get("filename") or "(제목)"
-        title = entry.get("title", "")
-        line1 = ctk.CTkLabel(
-            text_area, text=f"{filename}  ({title})  · {status_txt}",
-            anchor="w", justify="left", text_color=color, wraplength=200,
-        )
-        line1.pack(fill="x")
-
-        # 2줄: 일시 포맷/확장자 품질
+        filename = entry.get("filename") or ""
+        title = entry.get("title", "(제목 없음)")
+        # 영상이름 (다운로드명)
+        primary = title + (f" ({filename})" if filename and filename != "(제목)" else "")
         detail = (
             f"{entry.get('timestamp', '')}  "
             f"{entry.get('kind', '')}/{entry.get('ext', '')} "
-            f"{entry.get('quality', '')}"
+            f"{entry.get('quality', '')}  · {status_txt}"
         )
         msg = entry.get("message")
-        if msg:
-            detail += f"\n{msg}"
-        line2 = ctk.CTkLabel(
-            text_area, text=detail, anchor="w", justify="left",
-            text_color=("gray40", "gray60"), wraplength=200,
-        )
-        line2.pack(fill="x")
 
-        # 더블클릭 → 재추가
-        url = entry.get("url")
-        for w in (text_area, line1, line2):
-            w.bind("<Double-Button-1>", lambda e, u=url: self._readd(u))
+        if expanded:
+            primary_text = primary                       # 전체 표시(자동 줄바꿈)
+            detail_text = detail + (f"\n{msg}" if msg else "")
+            arrow = "▾ "
+        else:
+            primary_text = _clamp_text(primary, self.item_font, self._clamp_w, 2)
+            detail_text = detail
+            arrow = "▸ "
+
+        p = ctk.CTkLabel(
+            text_area, text=arrow + primary_text, anchor="w", justify="left",
+            text_color=color, wraplength=self._clamp_w + 20, font=self.item_font,
+        )
+        p.pack(fill="x")
+        d = ctk.CTkLabel(
+            text_area, text=detail_text, anchor="w", justify="left",
+            text_color=("gray40", "gray60"), wraplength=self._clamp_w + 20,
+        )
+        d.pack(fill="x")
+
+        # 클릭 → 펼침/접힘 토글 (버튼 제외)
+        for w in (row, text_area, p, d):
+            w.bind("<Button-1>", lambda e, i=eid: self._toggle_expand(i))
+
+        if expanded:
+            btnbar = ctk.CTkFrame(row, fg_color="transparent")
+            btnbar.pack(fill="x", padx=8, pady=(0, 8))
+            ctk.CTkButton(
+                btnbar, text="목록에 추가", width=96, height=26,
+                command=lambda u=entry.get("url"): self._readd(u),
+            ).pack(side="left")
+            ctk.CTkButton(
+                btnbar, text="내역에서 삭제", width=104, height=26,
+                fg_color="gray", hover_color="gray30",
+                command=lambda i=eid: self._delete(i),
+            ).pack(side="right")
+
+    def _toggle_expand(self, eid):
+        if not eid:
+            return
+        if eid in self._expanded:
+            self._expanded.discard(eid)
+        else:
+            self._expanded.add(eid)
+        self.render()
 
     def _readd(self, url: str | None):
         if url:

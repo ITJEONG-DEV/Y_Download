@@ -583,6 +583,7 @@ class App(ctk.CTk):
 
         left = ctk.CTkFrame(self.body, fg_color="transparent")
         left.pack(side="left", fill="both", expand=True)
+        self.left = left  # 패널 토글 시 폭 고정(freeze)용 참조
 
         # 내역 패널 미리 생성(초기엔 숨김)
         self.history_panel = HistoryPanel(self.body, self)
@@ -739,18 +740,34 @@ class App(ctk.CTk):
         return "number"
 
     def toggle_history(self):
-        """우측 내역 패널을 열고 닫는다."""
+        """
+        우측 내역 패널을 열고 닫는다.
+        창을 넓히는 동안 왼쪽 콘텐츠 폭을 고정(freeze)해, 늘어난 폭이 오른쪽 패널 자리에만
+        가고 왼쪽 행들은 크기 변화가 없어 다시 그려지지 않게 한다(전체 UI 재그리기 방지).
+        """
         if self._history_visible:
-            # 닫기: 패널 제거 → 창 축소 (사이에 강제 갱신 없이 한 번의 레이아웃으로)
             self.history_panel.pack_forget()
             self._grow_window(-1)
+            self._unfreeze_left()
             self._history_visible = False
         else:
-            # 열기: 창을 먼저 넓히고 → 패널 끼움. 좌측 폭이 유지되어 목록 재배치가 없다.
             self.history_panel.render_if_dirty()
+            self._freeze_left()
             self._grow_window(+1)
             self.history_panel.pack(side="right", fill="y", padx=(0, 8), pady=8)
             self._history_visible = True
+
+    def _freeze_left(self):
+        """왼쪽 콘텐츠를 현재 크기로 고정(폭 변화로 인한 재그리기 방지)."""
+        self.left.update_idletasks()
+        self.left.configure(width=self.left.winfo_width(), height=self.left.winfo_height())
+        self.left.pack_propagate(False)
+        self.left.pack_configure(expand=False, fill="y")
+
+    def _unfreeze_left(self):
+        """왼쪽 콘텐츠 고정 해제(창 크기에 다시 맞춰 늘고 줄어들게)."""
+        self.left.pack_propagate(True)
+        self.left.pack_configure(expand=True, fill="both")
 
     def _grow_window(self, sign: int):
         """

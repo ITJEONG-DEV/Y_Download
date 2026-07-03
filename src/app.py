@@ -37,6 +37,11 @@ from downloader import (
     AUDIO_EXTS,
 )
 
+try:
+    from version import __version__
+except Exception:
+    __version__ = "dev"
+
 
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
@@ -350,7 +355,7 @@ class HistoryPanel(ctk.CTkFrame):
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("YouTube Downloader")
+        self.title(f"YouTube Downloader v{__version__}")
         self.geometry("880x660")
         self.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
 

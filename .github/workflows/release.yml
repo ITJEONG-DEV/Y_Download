@@ -1,0 +1,72 @@
+name: Release
+
+# vX.Y.Z 형태의 버전 태그를 push하면 exe를 빌드해 GitHub Release로 자동 배포한다.
+#   예)  git tag v1.0.0
+#        git push origin v1.0.0
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # Release 생성/자산 업로드 권한
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Stamp version from tag
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}" -replace '^v',''
+          Set-Content -Path src/version.py -Value "__version__ = `"$v`"" -Encoding utf8
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Building version $v"
+
+      - name: Download ffmpeg (for full build)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force bin | Out-Null
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp -Force
+          $ff = Get-ChildItem -Recurse ffmpeg_tmp -Filter ffmpeg.exe  | Select-Object -First 1
+          $fp = Get-ChildItem -Recurse ffmpeg_tmp -Filter ffprobe.exe | Select-Object -First 1
+          Copy-Item $ff.FullName bin/ffmpeg.exe  -Force
+          Copy-Item $fp.FullName bin/ffprobe.exe -Force
+
+      - name: Build (full + lite)
+        run: python build.py all
+
+      - name: Package artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release  | Out-Null
+          # full: 폴더형 전체를 zip
+          Compress-Archive -Path dist/YouTubeDownloader/* -DestinationPath "release/YouTubeDownloader-full-$env:VERSION.zip" -Force
+          # lite: 단일 exe + ffmpeg 준비 안내 동봉
+          New-Item -ItemType Directory -Force lite_pkg | Out-Null
+          Copy-Item dist/YouTubeDownloader-lite.exe lite_pkg/ -Force
+          Copy-Item "docs/lite-ffmpeg-안내.md"      lite_pkg/ -Force
+          Compress-Archive -Path lite_pkg/* -DestinationPath "release/YouTubeDownloader-lite-$env:VERSION.zip" -Force
+          Get-ChildItem release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "YouTube Downloader ${{ github.ref_name }}"
+          files: release/*.zip
+          generate_release_notes: true

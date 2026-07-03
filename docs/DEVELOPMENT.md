@@ -26,7 +26,8 @@
 | 9 | **다운로드 내역**: 성공/실패 기록, 우측 사이드 패널로 조회, 더블클릭 재추가, 단일·전체 삭제 | ✅ 구현 |
 | 10 | **파일명 입력 커서 편의**: Up=맨앞 / Down=맨뒤 | ✅ 구현 |
 | 11 | **반응형 목록 행**: 폭에 따라 제목 줄바꿈·파일명 신축(잘림 방지) | ✅ 구현 |
-| 12 | 배포용 단독 실행 exe | ⬜ 예정 (PyInstaller) |
+| 12 | 배포용 단독 실행 exe (full/lite 2종) | ✅ 구현 (`build.py`) |
+| 13 | **버전 태그 기반 GitHub Release 자동 배포** | ✅ 구현 (GitHub Actions) |
 
 ---
 
@@ -174,6 +175,34 @@ python build.py lite      # 라이트만
 
 ---
 
+## 6-1. 릴리스 / 버전 태그 자동 배포
+
+버전은 `src/version.py`의 `__version__`이 단일 소스이며, 앱 창 제목에 `v{버전}`으로 표시된다.
+릴리스는 **Git 태그 push**로 트리거된다 — `.github/workflows/release.yml`(GitHub Actions).
+
+### 릴리스 방법
+```powershell
+git tag v1.0.0
+git push origin v1.0.0     # -> Actions가 자동 빌드 & Release 발행
+```
+
+### 워크플로 동작 (windows-latest)
+1. Python 3.12 준비 + 의존성/PyInstaller 설치
+2. 태그명(`v1.0.0`)에서 버전 추출해 `src/version.py`에 기록(빌드 산출물에 반영, 커밋 안 함)
+3. ffmpeg(essentials) 다운로드 → `bin/`에 배치 (CI에는 ffmpeg가 없으므로)
+4. `python build.py all` 로 full + lite 빌드
+5. 산출물 zip 패키징
+   - `YouTubeDownloader-full-<버전>.zip` (폴더형, ffmpeg 포함)
+   - `YouTubeDownloader-lite-<버전>.zip` (단일 exe + `lite-ffmpeg-안내.md`)
+6. `softprops/action-gh-release`로 GitHub Release 생성 + zip 첨부(릴리스 노트 자동 생성)
+
+### 버전 올리기
+- 평소 개발 중에는 `src/version.py`를 손댈 필요 없음(태그가 릴리스 버전을 결정).
+- 원하면 로컬 기본값도 함께 올려 커밋(예: `0.1.0` → `1.0.0`).
+- 태그 규칙: `vMAJOR.MINOR.PATCH` (예: `v1.2.0`).
+
+---
+
 ## 7. 진행 상황 / TODO
 
 ### 완료
@@ -188,6 +217,8 @@ python build.py lite      # 라이트만
 - [x] 파일명 입력 커서 편의(Up/Down), OptionMenu 폭 고정, 반응형 행 레이아웃
 - [x] 의존성 설치 및 핵심 로직(`fetch_info`/`estimate_size`/`config`) 동작 검증
 - [x] PyInstaller 배포 빌드(`build.py`): full(폴더형+ffmpeg) / lite(단일파일) 2종, exe 기동 검증
+- [x] 버전 단일 소스(`src/version.py`) + 창 제목 표기
+- [x] 버전 태그 push 시 GitHub Actions가 빌드→Release 자동 배포(`.github/workflows/release.yml`)
 
 ### 다음 할 일 (우선순위 순)
 - [ ] **실제 다운로드 최종 검증** (full/lite exe에서 영상·음원 다운로드까지 확인)

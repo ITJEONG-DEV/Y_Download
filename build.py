@@ -21,6 +21,14 @@ import sys
 
 import PyInstaller.__main__
 
+# CI 등 콘솔 인코딩이 UTF-8이 아닌 환경(cp1252)에서 한글 print가
+# UnicodeEncodeError로 죽지 않도록 표준출력을 UTF-8로 재설정한다.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(ROOT, "src", "app.py")
 ICON = os.path.join(ROOT, "assets", "app.ico")  # 있으면 자동 사용

@@ -11,6 +11,9 @@ on:
 permissions:
   contents: write   # Release 생성/자산 업로드 권한
 
+env:
+  PYTHONUTF8: "1"        # 러너 콘솔 인코딩과 무관하게 Python I/O를 UTF-8로
+
 jobs:
   build-and-release:
     runs-on: windows-latest

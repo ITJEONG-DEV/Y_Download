@@ -144,11 +144,14 @@ def _wrap_around(text: str, font, first_width: int, full_width: int, narrow_line
 class DownloadRow(ctk.CTkFrame):
     """목록의 한 항목. 자체 위젯과 상태(VideoInfo)를 가진다."""
 
-    def __init__(self, master, info: VideoInfo, thumb, on_remove):
+    def __init__(self, master, info: VideoInfo, thumb, on_remove, defaults=None, on_defaults_change=None):
         super().__init__(master, fg_color=("gray90", "gray20"))
         self.info = info
         self._thumb = thumb
         self._on_remove = on_remove
+        self._defaults = defaults or {}
+        self._on_defaults_change = on_defaults_change
+        self._initializing = True
         self._last_wl = 0
 
         self.index_label = ctk.CTkLabel(
@@ -195,7 +198,8 @@ class DownloadRow(ctk.CTkFrame):
         self.name_entry.bind("<Down>", self._cursor_end)     # 커서 맨 뒤로
         ctk.CTkLabel(namebar, text="확장자:").pack(side="left")
         self.ext_menu = ctk.CTkOptionMenu(
-            namebar, values=VIDEO_EXTS, width=88, dynamic_resizing=False
+            namebar, values=VIDEO_EXTS, width=88, dynamic_resizing=False,
+            command=lambda _=None: self._on_option_change(),
         )
         self.ext_menu.pack(side="left", padx=(4, 0))
 
@@ -211,7 +215,7 @@ class DownloadRow(ctk.CTkFrame):
         ctk.CTkLabel(ctrlbar, text="품질:").pack(side="left")
         self.quality_menu = ctk.CTkOptionMenu(
             ctrlbar, values=["최고"], width=126, dynamic_resizing=False,
-            command=lambda _=None: self._update_estimate(),
+            command=lambda _=None: self._on_option_change(),
         )
         self.quality_menu.pack(side="left", padx=(4, 10))
 
@@ -233,7 +237,8 @@ class DownloadRow(ctk.CTkFrame):
         )
         self.size_label.pack(side="left", fill="x")
 
-        self._apply_video_options()
+        self._apply_defaults()
+        self._initializing = False
 
     def set_index(self, index: int):
         self.index_label.configure(text=str(index))
@@ -260,10 +265,50 @@ class DownloadRow(ctk.CTkFrame):
 
     # 포맷 전환 시 확장자/품질 옵션 갱신
     def _on_kind_change(self, _value=None):
-        if self.kind_menu.get() == "음원":
+        if self.kind_menu.get() == "\uC74C\uC6D0":
             self._apply_audio_options()
         else:
             self._apply_video_options()
+        self._notify_defaults_changed()
+
+    def _on_option_change(self):
+        self._update_estimate()
+        self._notify_defaults_changed()
+
+    def _notify_defaults_changed(self):
+        if self._initializing or self._on_defaults_change is None:
+            return
+        self._on_defaults_change(self.get_defaults())
+
+    def get_defaults(self) -> dict:
+        p = self.get_params()
+        return {
+            "kind": p["kind"],
+            "ext": p["ext"],
+            "quality": self.quality_menu.get(),
+        }
+
+    def _quality_values(self) -> list[str]:
+        return list(self.quality_menu.cget("values") or [])
+
+    def _apply_defaults(self):
+        kind = self._defaults.get("kind")
+        if kind == "audio":
+            self.kind_menu.set("\uC74C\uC6D0")
+            self._apply_audio_options()
+        else:
+            self.kind_menu.set("\uC601\uC0C1")
+            self._apply_video_options()
+
+        ext = self._defaults.get("ext")
+        ext_values = AUDIO_EXTS if self.kind_menu.get() == "\uC74C\uC6D0" else VIDEO_EXTS
+        if ext in ext_values:
+            self.ext_menu.set(ext)
+
+        quality = self._defaults.get("quality")
+        if quality in self._quality_values():
+            self.quality_menu.set(quality)
+        self._update_estimate()
 
     def _apply_video_options(self):
         self.ext_menu.configure(values=VIDEO_EXTS)
@@ -525,6 +570,7 @@ class App(ctk.CTk):
         self._normal_geom = None  # 패널 닫힘·비최대화 상태의 기본 창 위치/크기
         default_dir = os.path.join(os.path.expanduser("~"), "Downloads")
         self.download_dir = config.get_download_dir(default_dir)
+        self.item_defaults = config.get_item_defaults()
 
         self._build_ui()
 
@@ -643,6 +689,10 @@ class App(ctk.CTk):
         self._renumber_rows()
 
     # ------------------------------------------------- 자동 업데이트
+    def _on_row_defaults_change(self, defaults: dict):
+        self.item_defaults = defaults
+        config.set_item_defaults(defaults)
+
     def _start_update_check(self):
         threading.Thread(target=self._update_check_worker, daemon=True).start()
 
@@ -831,7 +881,11 @@ class App(ctk.CTk):
     def _on_add_done(self, info: VideoInfo, thumb):
         if self.empty_label.winfo_exists():
             self.empty_label.pack_forget()
-        row = DownloadRow(self.list_frame, info, thumb, self._remove_row)
+        row = DownloadRow(
+            self.list_frame, info, thumb, self._remove_row,
+            defaults=self.item_defaults,
+            on_defaults_change=self._on_row_defaults_change,
+        )
         row.pack(fill="x", padx=4, pady=4)
         self.rows.append(row)
         self._refresh_list_state()

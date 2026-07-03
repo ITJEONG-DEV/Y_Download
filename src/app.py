@@ -114,13 +114,23 @@ class DownloadRow(ctk.CTkFrame):
         )
         self.quality_menu.grid(row=2, column=4, sticky="w", padx=(0, 6), pady=(0, 8))
 
-        # 예상 크기
-        self.size_label = ctk.CTkLabel(self, text="예상: -", text_color=("gray40", "gray60"))
-        self.size_label.grid(row=2, column=5, sticky="w", padx=6, pady=(0, 8))
+        # 예상 크기 — 고정 폭 셀(텍스트 길이가 바뀌어도 열 폭이 변하지 않게 propagate off)
+        size_cell = ctk.CTkFrame(self, width=120, height=24, fg_color="transparent")
+        size_cell.grid(row=2, column=5, sticky="w", padx=6, pady=(0, 8))
+        size_cell.grid_propagate(False)
+        self.size_label = ctk.CTkLabel(
+            size_cell, text="예상: -", anchor="w", text_color=("gray40", "gray60")
+        )
+        self.size_label.pack(side="left", fill="x")
 
-        # 상태 표시(항목별)
-        self.status_label = ctk.CTkLabel(self, text="대기", anchor="w", text_color=("gray40", "gray60"))
-        self.status_label.grid(row=2, column=6, sticky="w", padx=6, pady=(0, 8))
+        # 상태 표시(항목별) — 고정 폭 셀
+        status_cell = ctk.CTkFrame(self, width=90, height=24, fg_color="transparent")
+        status_cell.grid(row=2, column=6, sticky="w", padx=6, pady=(0, 8))
+        status_cell.grid_propagate(False)
+        self.status_label = ctk.CTkLabel(
+            status_cell, text="대기", anchor="w", text_color=("gray40", "gray60")
+        )
+        self.status_label.pack(side="left", fill="x")
 
         self._apply_video_options()
 

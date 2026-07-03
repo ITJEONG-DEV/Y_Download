@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ffmpeg 바이너리 (대용량 — git에 포함하지 않음. bin/README.md 참고)
+/bin/*.exe

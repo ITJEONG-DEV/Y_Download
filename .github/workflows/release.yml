@@ -75,9 +75,13 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $ver = "${{ env.VERSION }}"
-          # 주석 없는 태그(경량)면 메시지가 태그명이 되므로, 그 경우 기본 문구 사용
+          # actions/checkout은 태그를 경량(커밋 SHA)으로만 가져와 주석 메시지가 사라진다.
+          # 주석 태그 객체를 명시적으로 다시 받아와야 %(contents)가 태그 메시지를 반환한다.
+          git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" 2>$null
+          # 경량 태그면 커밋 메시지가 나오므로, 커밋 메시지와 같으면 기본 문구로 대체
+          $commitMsg = (git tag -l --format='%(*contents)' $tag)
           $msg = git tag -l --format='%(contents)' $tag
-          if ([string]::IsNullOrWhiteSpace($msg) -or $msg.Trim() -eq $tag) {
+          if ([string]::IsNullOrWhiteSpace($msg) -or $msg.Trim() -eq $tag -or $msg.Trim() -eq $commitMsg.Trim()) {
             $msg = "- 개선 및 버그 수정"
           }
           $tpl = Get-Content -Raw -Encoding utf8 docs/release_body_template.md

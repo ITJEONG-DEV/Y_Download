@@ -392,10 +392,9 @@ class HistoryPanel(ctk.CTkFrame):
         status_txt = "성공" if ok else "실패"
         filename = entry.get("filename") or ""
         title = entry.get("title", "(제목 없음)")
-        # [성공/실패] 영상명 (파일명)
-        primary = f"[{status_txt}] {title}" + (
-            f" ({filename})" if filename and filename != "(제목)" else ""
-        )
+        # [성공/실패] 내가저장한파일명 (영상명)
+        has_fn = bool(filename) and filename != "(제목)"
+        primary = f"[{status_txt}] " + (f"{filename} ({title})" if has_fn else title)
         detail = (
             f"{entry.get('timestamp', '')}  "
             f"{entry.get('kind', '')}/{entry.get('ext', '')} {entry.get('quality', '')}"

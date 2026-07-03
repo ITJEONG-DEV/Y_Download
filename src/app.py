@@ -731,7 +731,7 @@ class App(ctk.CTk):
         self.dir_entry = ctk.CTkEntry(dir_frame)
         self.dir_entry.insert(0, self.download_dir)
         self.dir_entry.grid(row=0, column=1, sticky="ew", padx=4, pady=8)
-        ctk.CTkButton(dir_frame, text="찾기", width=64, command=self.on_browse).grid(
+        ctk.CTkButton(dir_frame, text="변경", width=64, command=self.on_browse).grid(
             row=0, column=2, padx=(4, 2), pady=8
         )
         ctk.CTkButton(dir_frame, text="열기", width=64, command=self.on_open_dir).grid(

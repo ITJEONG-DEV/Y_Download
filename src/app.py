@@ -37,6 +37,8 @@ from downloader import (
     AUDIO_EXTS,
 )
 
+import updater
+
 try:
     from version import __version__
 except Exception:
@@ -380,6 +382,81 @@ class App(ctk.CTk):
 
         self._build_ui()
 
+        # 실행 시 업데이트 확인 (패키지 빌드에서만; 개발 실행은 건너뜀)
+        if updater.build_kind() != "dev":
+            self.after(1500, self._start_update_check)
+
+    # ------------------------------------------------- 자동 업데이트
+    def _start_update_check(self):
+        threading.Thread(target=self._update_check_worker, daemon=True).start()
+
+    def _update_check_worker(self):
+        try:
+            latest = updater.check_update(__version__)
+        except Exception:
+            return  # 네트워크 오류 등은 조용히 무시
+        if latest:
+            self.after(0, lambda: self._show_update_modal(latest))
+
+    def _show_update_modal(self, latest: dict):
+        newver = latest["tag"].lstrip("vV")
+        win = ctk.CTkToplevel(self)
+        win.title("업데이트")
+        win.geometry("440x400")
+        win.resizable(False, False)
+        win.transient(self)
+
+        ctk.CTkLabel(
+            win, text="새로운 버전이 릴리즈 되었습니다.\n업데이트하시겠습니까?",
+            font=ctk.CTkFont(size=14, weight="bold"), justify="center",
+        ).pack(pady=(20, 6))
+        ctk.CTkLabel(win, text=f"현재 {__version__}    →    새 버전 {newver}").pack(pady=2)
+
+        # 변경 내용 요약
+        ctk.CTkLabel(win, text="변경 내용", anchor="w").pack(fill="x", padx=20, pady=(10, 0))
+        box = ctk.CTkTextbox(win, height=150, wrap="word")
+        box.pack(fill="both", expand=True, padx=20, pady=(2, 6))
+        box.insert("1.0", updater.extract_summary(latest.get("body", "")))
+        box.configure(state="disabled")
+
+        status = ctk.CTkLabel(win, text="", text_color=("gray40", "gray60"))
+        status.pack(pady=(0, 0))
+
+        bar = ctk.CTkFrame(win, fg_color="transparent")
+        bar.pack(pady=12)
+        later_btn = ctk.CTkButton(bar, text="나중에", width=110, fg_color="gray", hover_color="gray30")
+        later_btn.pack(side="left", padx=8)
+        ok_btn = ctk.CTkButton(bar, text="확인", width=110)
+        ok_btn.pack(side="left", padx=8)
+
+        def do_update():
+            try:
+                updater.download_and_apply(
+                    latest, updater.build_kind(),
+                    progress=lambda p: self.after(0, lambda: status.configure(text=f"다운로드 중... {p:.0f}%")),
+                )
+                self.after(0, lambda: status.configure(text="교체 후 재시작합니다..."))
+                self.after(900, self._quit_for_update)
+            except Exception as e:
+                msg = str(e)
+                self.after(0, lambda: status.configure(text=f"실패: {msg[:60]}"))
+                self.after(0, lambda: ok_btn.configure(state="normal"))
+                self.after(0, lambda: later_btn.configure(state="normal"))
+
+        def on_ok():
+            ok_btn.configure(state="disabled")
+            later_btn.configure(state="disabled")
+            status.configure(text="다운로드 준비 중...")
+            threading.Thread(target=do_update, daemon=True).start()
+
+        later_btn.configure(command=win.destroy)
+        ok_btn.configure(command=on_ok)
+        win.after(100, win.grab_set)  # 창이 뜬 뒤 모달 고정
+
+    def _quit_for_update(self):
+        # 도우미 배치가 종료를 기다리고 있으므로 앱을 닫으면 교체가 진행된다.
+        self.destroy()
+
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
         # 좌우 분할: 왼쪽=메인 콘텐츠, 오른쪽=내역 패널(토글)
@@ -432,8 +509,11 @@ class App(ctk.CTk):
         self.dir_entry = ctk.CTkEntry(dir_frame)
         self.dir_entry.insert(0, self.download_dir)
         self.dir_entry.grid(row=0, column=1, sticky="ew", padx=4, pady=8)
-        ctk.CTkButton(dir_frame, text="찾기", width=80, command=self.on_browse).grid(
-            row=0, column=2, padx=(4, 8), pady=8
+        ctk.CTkButton(dir_frame, text="찾기", width=64, command=self.on_browse).grid(
+            row=0, column=2, padx=(4, 2), pady=8
+        )
+        ctk.CTkButton(dir_frame, text="열기", width=64, command=self.on_open_dir).grid(
+            row=0, column=3, padx=(2, 8), pady=8
         )
 
         # --- 다운로드 버튼 + 진행률 ---
@@ -505,6 +585,15 @@ class App(ctk.CTk):
             self.dir_entry.insert(0, path)
             self.download_dir = path
             config.set_download_dir(path)  # 선택한 위치 기억
+
+    def on_open_dir(self):
+        """저장 위치 폴더를 탐색기로 연다. 없으면 생성 후 연다."""
+        path = self.dir_entry.get().strip() or self.download_dir
+        try:
+            os.makedirs(path, exist_ok=True)
+            os.startfile(path)  # Windows 탐색기로 열기
+        except Exception as e:
+            self._set_status(f"폴더 열기 실패: {e}")
 
     def toggle_history(self):
         """우측 내역 패널을 열고 닫는다."""

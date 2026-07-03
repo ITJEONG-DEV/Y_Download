@@ -432,10 +432,9 @@ class HistoryPanel(ctk.CTkFrame):
             ).pack(side="left")  # 목록에 추가(주 동작 — 강조색)
             ctk.CTkButton(
                 btnbar, text="🗑", width=36, height=26,
-                fg_color="transparent", text_color=("gray40", "gray60"),
-                hover_color=("gray80", "gray30"),
+                fg_color="#c0392b", hover_color="#a93226", text_color="white",
                 command=lambda i=eid: self._delete(i),
-            ).pack(side="right")  # 내역에서 삭제
+            ).pack(side="right")  # 내역에서 삭제(빨강으로 버튼임을 명확히)
 
     def _load_thumb_image(self, path):
         if not path or not os.path.exists(path):

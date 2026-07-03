@@ -678,7 +678,10 @@ class App(ctk.CTk):
     def _update_list_header(self):
         count = len(self.rows)
         title = "\ub2e4\uc6b4\ub85c\ub4dc \ubaa9\ub85d" if count == 0 else f"\ub2e4\uc6b4\ub85c\ub4dc \ubaa9\ub85d ({count}\uac1c)"
-        self.list_frame.configure(label_text=title)
+        self.list_title_label.configure(text=title)
+        if hasattr(self, "clear_list_btn"):
+            state = "disabled" if self._downloading or count == 0 else "normal"
+            self.clear_list_btn.configure(state=state)
 
     def _renumber_rows(self):
         for index, row in enumerate(self.rows, start=1):
@@ -799,8 +802,21 @@ class App(ctk.CTk):
         self.history_btn.grid(row=0, column=2, padx=(4, 8), pady=8)
 
         # --- 목록 (스크롤 영역) ---
-        self.list_frame = ctk.CTkScrollableFrame(left, label_text="다운로드 목록")
-        self.list_frame.pack(fill="both", expand=True, padx=16, pady=8)
+        list_header = ctk.CTkFrame(left, fg_color="transparent")
+        list_header.pack(fill="x", padx=16, pady=(8, 0))
+        self.list_title_label = ctk.CTkLabel(
+            list_header, text="\ub2e4\uc6b4\ub85c\ub4dc \ubaa9\ub85d",
+            font=ctk.CTkFont(size=13, weight="bold"), anchor="w",
+        )
+        self.list_title_label.pack(side="left")
+        self.clear_list_btn = ctk.CTkButton(
+            list_header, text="\ubaa8\ub450 \uc9c0\uc6b0\uae30", width=92, height=28,
+            command=self.clear_download_list, state="disabled",
+        )
+        self.clear_list_btn.pack(side="right")
+
+        self.list_frame = ctk.CTkScrollableFrame(left, label_text="")
+        self.list_frame.pack(fill="both", expand=True, padx=16, pady=(4, 8))
 
         self.empty_label = ctk.CTkLabel(
             self.list_frame, text="목록이 비어 있습니다. URL을 추가하세요.",
@@ -896,6 +912,17 @@ class App(ctk.CTk):
     def _on_add_error(self, err: Exception):
         self.add_btn.configure(state="normal", text="목록에 추가")
         self._set_status(f"조회 실패: {err}")
+
+    def clear_download_list(self):
+        if self._downloading or not self.rows:
+            return
+        for row in list(self.rows):
+            row.destroy()
+        self.rows.clear()
+        if self.empty_label.winfo_exists():
+            self.empty_label.pack(pady=40)
+        self._refresh_list_state()
+        self._set_status("\ubaa9\ub85d\uc744 \ubaa8\ub450 \uc9c0\uc6e0\uc2b5\ub2c8\ub2e4.")
 
     def _remove_row(self, row: DownloadRow):
         if self._downloading:
@@ -1023,6 +1050,7 @@ class App(ctk.CTk):
         self._downloading = True
         self.download_btn.configure(state="disabled", text="다운로드 중...")
         self.add_btn.configure(state="disabled")
+        self.clear_list_btn.configure(state="disabled")
         for row in self.rows:
             row.set_controls_enabled(False)
             row.set_status("대기", color=("gray40", "gray60"))
@@ -1126,6 +1154,7 @@ class App(ctk.CTk):
         self.progress.set(1.0)
         self.download_btn.configure(state="normal", text="전체 다운로드")
         self.add_btn.configure(state="normal")
+        self._update_list_header()
         for row in self.rows:
             row.set_controls_enabled(True)
         self._set_status(f"완료: {success}/{total}개 다운로드됨")

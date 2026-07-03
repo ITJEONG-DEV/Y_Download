@@ -325,7 +325,7 @@ class HistoryPanel(ctk.CTkFrame):
         self._expanded: set[str] = set()      # 펼쳐진 항목 id
         self.item_font = ctk.CTkFont(size=12)  # 말줄임 계산용
         self._clamp_w = 240                    # 접힘 상태 텍스트 폭(px)
-        self._img_refs: list = []              # 썸네일 CTkImage 참조 유지(GC 방지)
+        self._row_frames: dict = {}            # eid -> (row 프레임, entry) : 토글 시 그 행만 갱신
 
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=8, pady=(8, 2))
@@ -365,7 +365,7 @@ class HistoryPanel(ctk.CTkFrame):
 
     def render(self):
         self._dirty = False
-        self._img_refs.clear()
+        self._row_frames = {}
         for child in self.list_frame.winfo_children():
             child.destroy()
 
@@ -381,13 +381,21 @@ class HistoryPanel(ctk.CTkFrame):
             self._make_row(entry)
 
     def _make_row(self, entry: dict):
+        eid = entry.get("id")
+        row = ctk.CTkFrame(self.list_frame, fg_color=("gray92", "gray18"))
+        row.pack(fill="x", padx=2, pady=3)
+        self._row_frames[eid] = (row, entry)
+        self._populate_row(row, entry)
+
+    def _populate_row(self, row, entry: dict):
+        # 토글 시 이 행만 다시 채운다(전체 재렌더 없이).
+        for child in row.winfo_children():
+            child.destroy()
+
         ok = entry.get("status") == "성공"
         color = ("green", "#4caf50") if ok else ("red", "#e57373")
         eid = entry.get("id")
         expanded = eid in self._expanded
-
-        row = ctk.CTkFrame(self.list_frame, fg_color=("gray92", "gray18"))
-        row.pack(fill="x", padx=2, pady=3)
 
         status_txt = "성공" if ok else "실패"
         filename = entry.get("filename") or ""
@@ -440,8 +448,8 @@ class HistoryPanel(ctk.CTkFrame):
         if expanded:
             img = self._load_thumb_image(entry.get("thumb"))
             if img is not None:
-                self._img_refs.append(img)
                 thumb_lbl = ctk.CTkLabel(row, text="", image=img)
+                thumb_lbl._thumb_ref = img  # GC 방지(라벨 수명과 연동)
                 thumb_lbl.pack(padx=8, pady=2)
                 click_targets.append(thumb_lbl)
 
@@ -473,7 +481,13 @@ class HistoryPanel(ctk.CTkFrame):
             self._expanded.discard(eid)
         else:
             self._expanded.add(eid)
-        self.render()
+        # 전체 재렌더 대신 해당 행만 다시 채워 화면 끊김 방지
+        entry = self._row_frames.get(eid)
+        if entry:
+            row, data = entry
+            self._populate_row(row, data)
+        else:
+            self.render()
 
     def _readd(self, url: str | None):
         if url:

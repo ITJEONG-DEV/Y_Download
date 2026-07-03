@@ -382,21 +382,6 @@ class HistoryPanel(ctk.CTkFrame):
         )
         msg = entry.get("message")
 
-        click_targets = [row]
-
-        # 펼침: 썸네일(있으면) 먼저
-        if expanded:
-            img = self._load_thumb_image(entry.get("thumb"))
-            if img is not None:
-                self._img_refs.append(img)
-                thumb_lbl = ctk.CTkLabel(row, text="", image=img)
-                thumb_lbl.pack(padx=8, pady=(8, 2))
-                click_targets.append(thumb_lbl)
-
-        text_area = ctk.CTkFrame(row, fg_color="transparent")
-        text_area.pack(fill="x", padx=8, pady=(6, 4))
-        click_targets.append(text_area)
-
         if expanded:
             primary_text = primary                        # 전체 표시(자동 줄바꿈)
             detail_text = detail + (f"\n{msg}" if msg else "")
@@ -406,17 +391,32 @@ class HistoryPanel(ctk.CTkFrame):
             detail_text = _clamp_text(detail, self.item_font, self._clamp_w, 1)
             arrow = "▸ "
 
+        click_targets = [row]
+
+        # 1) 제목
         p = ctk.CTkLabel(
-            text_area, text=arrow + primary_text, anchor="w", justify="left",
+            row, text=arrow + primary_text, anchor="w", justify="left",
             text_color=color, wraplength=self._clamp_w + 20, font=self.item_font,
         )
-        p.pack(fill="x")
+        p.pack(fill="x", padx=8, pady=(6, 2))
+        click_targets.append(p)
+
+        # 2) 썸네일 (펼침 + 있을 때) — 제목 아래
+        if expanded:
+            img = self._load_thumb_image(entry.get("thumb"))
+            if img is not None:
+                self._img_refs.append(img)
+                thumb_lbl = ctk.CTkLabel(row, text="", image=img)
+                thumb_lbl.pack(padx=8, pady=2)
+                click_targets.append(thumb_lbl)
+
+        # 3) 날짜/포맷 등
         d = ctk.CTkLabel(
-            text_area, text=detail_text, anchor="w", justify="left",
+            row, text=detail_text, anchor="w", justify="left",
             text_color=("gray40", "gray60"), wraplength=self._clamp_w + 20,
         )
-        d.pack(fill="x")
-        click_targets += [p, d]
+        d.pack(fill="x", padx=8, pady=(0, 4))
+        click_targets.append(d)
 
         # 클릭 → 펼침/접힘 토글 (버튼 제외)
         for w in click_targets:

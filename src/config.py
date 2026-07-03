@@ -2,7 +2,7 @@
 config.py
 ---------
 사용자 설정(마지막 저장 위치 등)과 다운로드 내역을 JSON 파일로 영구 저장한다.
-저장 위치: %APPDATA%/YouTubeDownloader/  (없으면 홈 디렉터리)
+저장 위치: %APPDATA%/Y_Downloader/  (없으면 홈 디렉터리)
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import os
 import uuid
 
 _APP_DIR = os.path.join(
-    os.environ.get("APPDATA") or os.path.expanduser("~"), "YouTubeDownloader"
+    os.environ.get("APPDATA") or os.path.expanduser("~"), "Y_Downloader"
 )
 _SETTINGS_PATH = os.path.join(_APP_DIR, "settings.json")
 _HISTORY_PATH = os.path.join(_APP_DIR, "history.json")

@@ -59,17 +59,17 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force release  | Out-Null
           # full: 폴더형 전체를 zip
-          Compress-Archive -Path dist/YouTubeDownloader/* -DestinationPath "release/YouTubeDownloader-full-$env:VERSION.zip" -Force
+          Compress-Archive -Path dist/Y_Downloader/* -DestinationPath "release/Y_Downloader-full-$env:VERSION.zip" -Force
           # lite: 단일 exe + ffmpeg 준비 안내 동봉
           New-Item -ItemType Directory -Force lite_pkg | Out-Null
-          Copy-Item dist/YouTubeDownloader-lite.exe lite_pkg/ -Force
-          Copy-Item "docs/lite-ffmpeg-안내.md"      lite_pkg/ -Force
-          Compress-Archive -Path lite_pkg/* -DestinationPath "release/YouTubeDownloader-lite-$env:VERSION.zip" -Force
+          Copy-Item dist/Y_Downloader-lite.exe lite_pkg/ -Force
+          Copy-Item "docs/lite-ffmpeg-안내.md"   lite_pkg/ -Force
+          Compress-Archive -Path lite_pkg/* -DestinationPath "release/Y_Downloader-lite-$env:VERSION.zip" -Force
           Get-ChildItem release
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "YouTube Downloader ${{ github.ref_name }}"
+          name: "Y_Downloader ${{ github.ref_name }}"
           files: release/*.zip
           generate_release_notes: true

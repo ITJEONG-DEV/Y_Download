@@ -1,4 +1,4 @@
-# YouTube Downloader
+# Y_Downloader
 
 유튜브 URL을 붙여넣어 **영상(mp4) 또는 음원(mp3)** 으로 다운로드하는 Windows 데스크톱 프로그램.
 여러 개를 목록에 담아 **일괄 다운로드**할 수 있고, 항목마다 **파일명·확장자·포맷·품질**을 개별로 설정할 수 있습니다.
@@ -24,8 +24,8 @@ python src/app.py
 pip install pyinstaller
 python build.py          # full(폴더형+ffmpeg) + lite(단일파일) 모두 빌드
 ```
-- **full**: `dist/YouTubeDownloader/` — ffmpeg 포함, 폴더째 zip으로 배포
-- **lite**: `dist/YouTubeDownloader-lite.exe` — 단일 파일, ffmpeg 미포함
+- **full**: `dist/Y_Downloader/` — ffmpeg 포함, 폴더째 zip으로 배포
+- **lite**: `dist/Y_Downloader-lite.exe` — 단일 파일, ffmpeg 미포함
   ([`docs/lite-ffmpeg-안내.md`](docs/lite-ffmpeg-안내.md) 동봉)
 
 ## 기술 스택

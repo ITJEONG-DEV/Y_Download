@@ -1,4 +1,4 @@
-# YouTube Downloader — 개발 문서
+# Y_Downloader — 개발 문서
 
 > 이 문서는 작업을 **언제든 중단하고 재개**할 수 있도록 프로젝트의 목표·구조·진행 상황·다음 할 일을 기록한다.
 > 새 세션을 시작할 때 이 문서를 먼저 읽으면 현재 상태를 파악할 수 있다.
@@ -71,7 +71,7 @@ Y_Download/
   - `estimate_size(info, *, kind, max_height, audio_bitrate) -> int|None` : 예상 파일 크기(bytes)
   - `format_size(bytes) -> str` : 사람이 읽는 크기 문자열, `sanitize_filename(name)` : 파일명 정리
   - `VideoInfo` 데이터클래스, `VIDEO_EXTS`/`AUDIO_EXTS` 상수
-- **config.py** — 설정·내역 JSON 영구저장(`%APPDATA%/YouTubeDownloader/`).
+- **config.py** — 설정·내역 JSON 영구저장(`%APPDATA%/Y_Downloader/`).
   - `get_download_dir/set_download_dir` : 마지막 저장 위치 기억(settings.json)
   - `load_history/add_history/delete_history/clear_history` : 내역(history.json), 항목마다 고유 `id`
 - **app.py** — UI만 담당. 조회/다운로드 등 무거운 작업은 **스레드**에서 실행하고
@@ -144,8 +144,11 @@ python src/app.py
 
 | 산출물 | 명령 | 방식 | ffmpeg | 결과물 |
 |--------|------|------|--------|--------|
-| **full (기본)** | `python build.py full` | 폴더형(onedir) | **포함** | `dist/YouTubeDownloader/` (~496MB) |
-| **lite (라이트)** | `python build.py lite` | 단일파일(onefile) | 미포함 | `dist/YouTubeDownloader-lite.exe` (~39MB) |
+| **full (기본)** | `python build.py full` | 폴더형(onedir) | **포함** | `dist/Y_Downloader/` (ffmpeg essentials 기준 ~100MB, full build 사용 시 더 큼) |
+| **lite (라이트)** | `python build.py lite` | 단일파일(onefile) | 미포함 | `dist/Y_Downloader-lite.exe` (~27MB) |
+
+> exe에는 개발자명 등 메타데이터(버전 리소스)가 포함된다 — `build.py`의 `DEV_NAME` 수정으로 변경.
+> (Authenticode 서명 인증서는 아니며, 파일 속성 "자세히" 탭 표기용.)
 
 ```powershell
 pip install pyinstaller
@@ -166,9 +169,9 @@ python build.py lite      # 라이트만
 4. 위 모두 없으면 **시스템 PATH**의 ffmpeg 사용
 
 ### 배포 방법
-- **full**: `dist/YouTubeDownloader/` 폴더 전체를 zip으로 압축해 전달 → 받는 사람은 압축 풀고
-  `YouTubeDownloader.exe` 실행. ffmpeg 포함이라 추가 설치 불필요.
-- **lite**: `YouTubeDownloader-lite.exe` 단일 파일. **ffmpeg 미포함**이므로 받는 사람이 아래 중 하나 필요:
+- **full**: `dist/Y_Downloader/` 폴더 전체를 zip으로 압축해 전달 → 받는 사람은 압축 풀고
+  `Y_Downloader.exe` 실행. ffmpeg 포함이라 추가 설치 불필요.
+- **lite**: `Y_Downloader-lite.exe` 단일 파일. **ffmpeg 미포함**이므로 받는 사람이 아래 중 하나 필요:
   - 시스템에 ffmpeg 설치(`winget install Gyan.FFmpeg`), 또는
   - `ffmpeg.exe`를 **exe와 같은 폴더**(또는 그 아래 `ffmpeg/`·`bin/`)에 배치.
   - → 이 안내를 lite exe와 함께 동봉할 것. (`docs/lite-ffmpeg-안내.md` 참고)
@@ -192,8 +195,8 @@ git push origin v1.0.0     # -> Actions가 자동 빌드 & Release 발행
 3. ffmpeg(essentials) 다운로드 → `bin/`에 배치 (CI에는 ffmpeg가 없으므로)
 4. `python build.py all` 로 full + lite 빌드
 5. 산출물 zip 패키징
-   - `YouTubeDownloader-full-<버전>.zip` (폴더형, ffmpeg 포함)
-   - `YouTubeDownloader-lite-<버전>.zip` (단일 exe + `lite-ffmpeg-안내.md`)
+   - `Y_Downloader-full-<버전>.zip` (폴더형, ffmpeg 포함)
+   - `Y_Downloader-lite-<버전>.zip` (단일 exe + `lite-ffmpeg-안내.md`)
 6. `softprops/action-gh-release`로 GitHub Release 생성 + zip 첨부(릴리스 노트 자동 생성)
 
 ### 버전 올리기
@@ -219,6 +222,10 @@ git push origin v1.0.0     # -> Actions가 자동 빌드 & Release 발행
 - [x] PyInstaller 배포 빌드(`build.py`): full(폴더형+ffmpeg) / lite(단일파일) 2종, exe 기동 검증
 - [x] 버전 단일 소스(`src/version.py`) + 창 제목 표기
 - [x] 버전 태그 push 시 GitHub Actions가 빌드→Release 자동 배포(`.github/workflows/release.yml`)
+- [x] 첫 릴리스 `v0.1.0` 발행 검증(full/lite zip 자산 확인)
+- [x] 프로그램명 **Y_Downloader**로 변경(창 제목·빌드 산출물·설정 폴더)
+- [x] exe 버전 리소스에 개발자명(`DEV_NAME`) 메타데이터 포함
+- [x] 내역 패널 열 때 발생하던 `<Configure>`→wraplength 재귀 크래시 수정(after_idle + 상위 컨테이너 바인딩)
 
 ### 다음 할 일 (우선순위 순)
 - [ ] **실제 다운로드 최종 검증** (full/lite exe에서 영상·음원 다운로드까지 확인)

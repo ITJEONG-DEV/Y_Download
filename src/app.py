@@ -103,8 +103,11 @@ class DownloadRow(ctk.CTkFrame):
             anchor="w", justify="left",
         )
         self.title_label.pack(side="left", fill="x", expand=True)
-        # 라벨 폭에 맞춰 줄바꿈 길이 갱신 → 좁아지면 잘리지 않고 줄바꿈
-        self.title_label.bind("<Configure>", self._on_title_configure)
+        # 컨테이너 폭에 맞춰 제목 줄바꿈 길이 갱신(반응형).
+        # 콜백 내부에서 위젯 속성을 직접 바꾸면 <Configure>가 재귀로 다시 불려
+        # 스택 오버플로가 난다. 그래서 라벨이 아닌 상위 컨테이너(right)에 바인딩하고
+        # 실제 갱신은 after_idle로 미뤄 재귀 고리를 끊는다.
+        right.bind("<Configure>", self._on_title_configure)
 
         # 2줄: 파일명 + 확장자
         namebar = ctk.CTkFrame(right, fg_color="transparent")
@@ -171,10 +174,19 @@ class DownloadRow(ctk.CTkFrame):
         return "break"
 
     def _on_title_configure(self, event):
-        wl = max(120, event.width - 8)
-        if self._last_wl != wl:
-            self._last_wl = wl
+        # 삭제버튼(~28) + 여백을 제외한 폭으로 줄바꿈 길이 계산
+        wl = max(120, event.width - 44)
+        if self._last_wl == wl:
+            return
+        self._last_wl = wl
+        # 콜백 안에서 바로 바꾸지 않고 미뤄서 <Configure> 재귀를 방지
+        self.after_idle(self._apply_wraplength, wl)
+
+    def _apply_wraplength(self, wl: int):
+        try:
             self.title_label.configure(wraplength=wl)
+        except Exception:
+            pass
 
     # 포맷 전환 시 확장자/품질 옵션 갱신
     def _on_kind_change(self, _value=None):
@@ -355,7 +367,7 @@ class HistoryPanel(ctk.CTkFrame):
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title(f"YouTube Downloader v{__version__}")
+        self.title(f"Y_Downloader v{__version__}")
         self.geometry("880x660")
         self.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
 

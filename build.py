@@ -3,8 +3,8 @@ build.py
 --------
 PyInstaller 배포 빌드 스크립트. 두 가지 산출물을 만든다.
 
-  full  : 폴더형(onedir) + ffmpeg 번들 포함  -> dist/YouTubeDownloader/
-  lite  : 단일파일(onefile), ffmpeg 미포함    -> dist/YouTubeDownloader-lite.exe
+  full  : 폴더형(onedir) + ffmpeg 번들 포함  -> dist/Y_Downloader/
+  lite  : 단일파일(onefile), ffmpeg 미포함    -> dist/Y_Downloader-lite.exe
 
 사용법:
   python build.py            # full + lite 모두 빌드
@@ -34,8 +34,60 @@ SRC = os.path.join(ROOT, "src", "app.py")
 ICON = os.path.join(ROOT, "assets", "app.ico")  # 있으면 자동 사용
 SEP = os.pathsep  # Windows ';'
 
-APP_NAME = "YouTubeDownloader"
-LITE_NAME = "YouTubeDownloader-lite"
+# 버전은 src/version.py 단일 소스에서 가져온다.
+sys.path.insert(0, os.path.join(ROOT, "src"))
+try:
+    from version import __version__
+except Exception:
+    __version__ = "0.0.0"
+
+APP_TITLE = "Y_Downloader"
+APP_NAME = "Y_Downloader"
+LITE_NAME = "Y_Downloader-lite"
+
+# exe 파일 속성(자세히 탭)에 표시할 개발자명. 서명 인증서는 아니며 단순 표기용.
+DEV_NAME = "ITJEONG-DEV"
+
+
+def _version_tuple() -> tuple:
+    nums = []
+    for p in __version__.replace("-", ".").split("."):
+        digits = "".join(c for c in p if c.isdigit())
+        nums.append(int(digits) if digits else 0)
+    return tuple((nums + [0, 0, 0, 0])[:4])
+
+
+def _write_version_file() -> str:
+    """PyInstaller용 Windows 버전 리소스 파일 생성(개발자명 등 메타데이터 포함)."""
+    v = _version_tuple()
+    os.makedirs(os.path.join(ROOT, "build"), exist_ok=True)
+    path = os.path.join(ROOT, "build", "version_info.txt")
+    content = f"""# UTF-8
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers={v}, prodvers={v},
+    mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable('041204B0', [
+        StringStruct('CompanyName', '{DEV_NAME}'),
+        StringStruct('FileDescription', '{APP_TITLE}'),
+        StringStruct('FileVersion', '{__version__}'),
+        StringStruct('InternalName', '{APP_TITLE}'),
+        StringStruct('OriginalFilename', '{APP_TITLE}.exe'),
+        StringStruct('ProductName', '{APP_TITLE}'),
+        StringStruct('ProductVersion', '{__version__}'),
+        StringStruct('LegalCopyright', '(c) {DEV_NAME}'),
+      ])
+    ]),
+    VarFileInfo([VarStruct('Translation', [0x0412, 0x04B0])])
+  ]
+)
+"""
+    with open(path, "w", encoding="utf-8") as fp:
+        fp.write(content)
+    return path
 
 
 def _common_args() -> list[str]:
@@ -45,6 +97,7 @@ def _common_args() -> list[str]:
         "--noconfirm",
         "--clean",
         "--paths", os.path.join(ROOT, "src"),
+        "--version-file", _write_version_file(),
         # 데이터/서브모듈 수집 (누락 시 런타임 오류 방지)
         "--collect-all", "customtkinter",
         "--collect-submodules", "yt_dlp",

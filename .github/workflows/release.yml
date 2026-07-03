@@ -79,8 +79,9 @@ jobs:
           # 주석 태그 객체를 명시적으로 다시 받아와야 %(contents)가 태그 메시지를 반환한다.
           git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" 2>$null
           # 경량 태그면 커밋 메시지가 나오므로, 커밋 메시지와 같으면 기본 문구로 대체
-          $commitMsg = (git tag -l --format='%(*contents)' $tag)
-          $msg = git tag -l --format='%(contents)' $tag
+          # Out-String으로 여러 줄을 줄바꿈 보존한 단일 문자열로 만든다(배열→공백연결 방지)
+          $commitMsg = (git tag -l --format='%(*contents)' $tag | Out-String).Trim()
+          $msg = (git tag -l --format='%(contents)' $tag | Out-String).Trim()
           if ([string]::IsNullOrWhiteSpace($msg) -or $msg.Trim() -eq $tag -or $msg.Trim() -eq $commitMsg.Trim()) {
             $msg = "- 개선 및 버그 수정"
           }

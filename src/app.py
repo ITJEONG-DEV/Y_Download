@@ -408,6 +408,7 @@ class App(ctk.CTk):
 
         # 리사이즈는 디바운스로 한 번만 반영(이벤트 폭주로 인한 지연 방지)
         self._resize_after = None
+        self._last_list_w = 0  # 마지막으로 반영한 목록 폭(변화 없으면 재배치 생략)
         self.bind("<Configure>", self._on_window_configure)
         # 닫을 때 창 상태 저장
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -487,13 +488,18 @@ class App(ctk.CTk):
             self.after_cancel(self._resize_after)
         self._resize_after = self.after(120, self._apply_responsive_layout)
 
-    def _apply_responsive_layout(self):
+    def _apply_responsive_layout(self, force: bool = False):
         self._resize_after = None
         if not self.rows:
             return
-        self.list_frame.update_idletasks()
+        # 목록 폭이 실제로 바뀌었을 때만 반영. 패널 토글은 목록 폭이 안 바뀌므로
+        # 여기서 걸러져 '닫은 뒤 한 박자 늦게 깜빡'이는 재그리기를 없앤다.
+        w = self.list_frame.winfo_width()
+        if not force and w == self._last_list_w:
+            return
+        self._last_list_w = w
         # 목록 폭 기준으로 제목 줄바꿈 폭 계산(썸네일·버튼·스크롤바·여백 감안)
-        wl = max(120, self.list_frame.winfo_width() - 190)
+        wl = max(120, w - 190)
         for row in self.rows:
             row.set_title_wraplength(wl)
 
@@ -690,7 +696,7 @@ class App(ctk.CTk):
         self.rows.append(row)
         self.add_btn.configure(state="normal", text="목록에 추가")
         self._set_status(f"추가됨: {info.title}  (총 {len(self.rows)}개)")
-        self.after(30, self._apply_responsive_layout)  # 새 행 제목 줄바꿈 폭 반영
+        self.after(30, lambda: self._apply_responsive_layout(force=True))  # 새 행 줄바꿈 폭 반영
 
     def _on_add_error(self, err: Exception):
         self.add_btn.configure(state="normal", text="목록에 추가")

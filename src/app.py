@@ -961,11 +961,13 @@ class App(ctk.CTk):
             self.after(0, lambda: self.progress.set((idx - 1) / total))
 
             status, message = "성공", ""
+            saved_name = None  # 실제 저장된 파일명(자동 번호 '(1)' 등 반영)
             try:
                 def hook(d, r=row, i=idx):
                     self._item_progress(d, r, i, total)
                 result = download(output_dir=out_dir, progress_callback=hook, **params)
                 success += 1
+                saved_name = os.path.splitext(os.path.basename(result.path))[0]
                 if result.status == "skipped":
                     message = "이미 있어 건너뜀"
                     self.after(0, lambda r=row: r.set_status("건너뜀", color=("gray50", "gray60")))
@@ -979,19 +981,19 @@ class App(ctk.CTk):
                 self.after(0, lambda r=row, m=message: r.set_status("실패", color=("red", "#e57373")))
                 self.after(0, lambda m=message: self._set_status(f"실패: {m}"))
 
-            # 내역 기록 (성공/실패 모두)
-            self._record_history(job, params, status, message)
+            # 내역 기록 (성공/실패 모두) — 실제 저장 파일명 사용
+            self._record_history(job, params, status, message, saved_name)
 
         self.after(0, lambda: self._on_all_done(success, total))
 
-    def _record_history(self, job, params, status, message):
+    def _record_history(self, job, params, status, message, saved_name=None):
         eid = uuid.uuid4().hex
         thumb = self._save_thumb(eid, job.get("thumb_url"))
         entry = {
             "id": eid,
             "url": params["url"],
             "title": job["title"],
-            "filename": params["filename"] or "(제목)",
+            "filename": saved_name or params["filename"] or "(제목)",
             "kind": "음원" if params["kind"] == "audio" else "영상",
             "ext": params["ext"],
             "quality": job["quality"],

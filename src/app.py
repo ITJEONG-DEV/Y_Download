@@ -64,6 +64,7 @@ HEIGHT_LABELS = {
     144: "144p",
 }
 AUDIO_BITRATES = ["320", "256", "192", "128"]
+INFO_FETCH_TIMEOUT_SEC = 5
 
 # 내역 사이드 패널 폭(px) 및 좌우 여백
 HISTORY_PANEL_WIDTH = 320
@@ -571,6 +572,8 @@ class App(ctk.CTk):
         default_dir = os.path.join(os.path.expanduser("~"), "Downloads")
         self.download_dir = config.get_download_dir(default_dir)
         self.item_defaults = config.get_item_defaults()
+        self._add_request_id = 0
+        self._add_pending = False
 
         self._build_ui()
 
@@ -881,20 +884,40 @@ class App(ctk.CTk):
         self.add_url(url)
 
     def add_url(self, url: str):
-        """URL을 조회해 목록에 추가 (on_add 및 내역 재추가에서 공용)."""
-        self.add_btn.configure(state="disabled", text="조회 중...")
-        self._set_status(f"영상 정보를 조회하는 중... {url}")
-        threading.Thread(target=self._add_worker, args=(url,), daemon=True).start()
+        """Add a URL by fetching metadata in the background."""
+        self._add_request_id += 1
+        request_id = self._add_request_id
+        self._add_pending = True
+        self.add_btn.configure(state="disabled", text="\uc870\ud68c \uc911...")
+        self._set_status(f"\uc601\uc0c1 \uc815\ubcf4\ub97c \uc870\ud68c\ud558\ub294 \uc911... {url}")
+        self.after(INFO_FETCH_TIMEOUT_SEC * 1000, lambda rid=request_id: self._on_add_timeout(rid))
+        threading.Thread(target=self._add_worker, args=(url, request_id), daemon=True).start()
 
-    def _add_worker(self, url: str):
+    def _add_worker(self, url: str, request_id: int):
         try:
-            info = fetch_info(url)
+            info = fetch_info(url, timeout=INFO_FETCH_TIMEOUT_SEC)
             thumb = self._load_thumbnail(info.thumbnail_url)
-            self.after(0, lambda: self._on_add_done(info, thumb))
+            self.after(0, lambda: self._on_add_done(info, thumb, request_id))
         except Exception as e:
-            self.after(0, lambda e=e: self._on_add_error(e))
+            self.after(0, lambda e=e: self._on_add_error(e, request_id))
 
-    def _on_add_done(self, info: VideoInfo, thumb):
+    def _is_current_add_request(self, request_id: int) -> bool:
+        return self._add_pending and request_id == self._add_request_id
+
+    def _finish_add_request(self):
+        self._add_pending = False
+        self.add_btn.configure(state="normal", text="\ubaa9\ub85d\uc5d0 \ucd94\uac00")
+
+    def _on_add_timeout(self, request_id: int):
+        if not self._is_current_add_request(request_id):
+            return
+        self._finish_add_request()
+        self._set_status(f"\uc870\ud68c \uc2dc\uac04 \ucd08\uacfc: {INFO_FETCH_TIMEOUT_SEC}\ucd08 \uc548\uc5d0 \uc751\ub2f5\ud558\uc9c0 \uc54a\uc558\uc2b5\ub2c8\ub2e4.")
+
+    def _on_add_done(self, info: VideoInfo, thumb, request_id: int):
+        if not self._is_current_add_request(request_id):
+            return
+        self._finish_add_request()
         if self.empty_label.winfo_exists():
             self.empty_label.pack_forget()
         row = DownloadRow(
@@ -909,9 +932,11 @@ class App(ctk.CTk):
         self._set_status(f"추가됨: {info.title}  (총 {len(self.rows)}개)")
         self.after(30, lambda: self._apply_responsive_layout(force=True))  # 새 행 줄바꿈 폭 반영
 
-    def _on_add_error(self, err: Exception):
-        self.add_btn.configure(state="normal", text="목록에 추가")
-        self._set_status(f"조회 실패: {err}")
+    def _on_add_error(self, err: Exception, request_id: int):
+        if not self._is_current_add_request(request_id):
+            return
+        self._finish_add_request()
+        self._set_status(f"\uc870\ud68c \uc2e4\ud328: {err}")
 
     def clear_download_list(self):
         if self._downloading or not self.rows:

@@ -53,6 +53,16 @@ def set_download_dir(path: str) -> None:
     save_settings(data)
 
 
+def get_conflict_policy(default: str = "number") -> str:
+    return load_settings().get("conflict_policy", default)
+
+
+def set_conflict_policy(policy: str) -> None:
+    data = load_settings()
+    data["conflict_policy"] = policy
+    save_settings(data)
+
+
 def get_window() -> dict | None:
     """마지막 창 위치/크기/최대화 상태({x,y,w,h,zoomed}) 또는 None."""
     win = load_settings().get("window")

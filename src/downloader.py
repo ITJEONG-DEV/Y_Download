@@ -220,6 +220,28 @@ def format_size(num_bytes: Optional[int]) -> str:
 VIDEO_EXTS = ["mp4", "mkv", "webm"]
 AUDIO_EXTS = ["mp3", "m4a", "wav"]
 
+# 파일명 중복 처리 정책
+CONFLICT_NUMBER = "number"        # name (1).ext 로 번호 붙이기
+CONFLICT_OVERWRITE = "overwrite"  # 기존 파일 덮어쓰기
+CONFLICT_SKIP = "skip"            # 이미 있으면 다운로드 건너뜀
+CONFLICT_POLICIES = (CONFLICT_NUMBER, CONFLICT_OVERWRITE, CONFLICT_SKIP)
+
+
+@dataclass
+class DownloadResult:
+    path: str
+    status: str  # "downloaded" | "skipped" | "overwritten"
+
+
+def _uniquify(output_dir: str, base: str, ext: str) -> str:
+    """'base.ext'가 있으면 'base (1).ext', 'base (2).ext' ... 로 비어있는 base 이름을 반환."""
+    candidate = base
+    n = 1
+    while os.path.exists(os.path.join(output_dir, candidate + "." + ext)):
+        candidate = f"{base} ({n})"
+        n += 1
+    return candidate
+
 
 def download(
     url: str,
@@ -230,31 +252,47 @@ def download(
     max_height: Optional[int] = None,  # video: 최대 해상도 (예: 1080). None이면 최고 화질
     audio_bitrate: str = "192",     # audio: 비트레이트 (kbps)
     filename: Optional[str] = None,  # 확장자 제외한 파일명. None이면 영상 제목 사용
+    on_conflict: str = CONFLICT_NUMBER,  # 파일명 중복 시 처리 정책
     progress_callback: Optional[ProgressCallback] = None,
-) -> str:
+) -> DownloadResult:
     """
-    실제 다운로드 수행. 완료된 파일 경로(추정)를 반환한다.
+    실제 다운로드 수행. DownloadResult(path, status)를 반환한다.
     kind="video"  -> 영상+음성 병합 (기본 mp4)
     kind="audio"  -> 음원 추출 (기본 mp3)
+    status: "downloaded" | "skipped" | "overwritten"
     """
     os.makedirs(output_dir, exist_ok=True)
 
     if ext is None:
         ext = "mp3" if kind == "audio" else "mp4"
 
-    # 파일명 템플릿: 커스텀 파일명이 있으면 사용, 없으면 영상 제목
-    if filename:
-        base = sanitize_filename(filename)
-        outtmpl = os.path.join(output_dir, base + ".%(ext)s")
-    else:
-        outtmpl = os.path.join(output_dir, "%(title)s.%(ext)s")
-
     ydl_opts: dict = {
-        "outtmpl": outtmpl,
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
     }
+
+    status = "downloaded"
+    # 파일명 템플릿 + 중복 처리
+    if filename:
+        base = sanitize_filename(filename)
+        target = os.path.join(output_dir, base + "." + ext)
+        if os.path.exists(target):
+            if on_conflict == CONFLICT_SKIP:
+                return DownloadResult(target, "skipped")
+            if on_conflict == CONFLICT_OVERWRITE:
+                ydl_opts["overwrites"] = True
+                status = "overwritten"
+            else:  # CONFLICT_NUMBER (기본)
+                base = _uniquify(output_dir, base, ext)
+        outtmpl = os.path.join(output_dir, base + ".%(ext)s")
+    else:
+        # 파일명 미지정(제목 사용): 사전 판정이 어려워 덮어쓰기 정책만 반영
+        outtmpl = os.path.join(output_dir, "%(title)s.%(ext)s")
+        if on_conflict == CONFLICT_OVERWRITE:
+            ydl_opts["overwrites"] = True
+
+    ydl_opts["outtmpl"] = outtmpl
 
     ffmpeg_loc = _ffmpeg_location()
     if ffmpeg_loc:
@@ -290,7 +328,7 @@ def download(
         produced = ydl.prepare_filename(info)
         final = os.path.splitext(produced)[0] + "." + ext
 
-    return final
+    return DownloadResult(final, status)
 
 
 # ---------------------------------------------------------------------------

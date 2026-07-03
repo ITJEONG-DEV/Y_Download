@@ -35,9 +35,13 @@ from downloader import (
     format_size,
     VIDEO_EXTS,
     AUDIO_EXTS,
+    CONFLICT_POLICIES,
 )
 
 import updater
+
+# 파일명 중복 처리 정책 라벨(표시용) ↔ 내부값
+CONFLICT_LABELS = {"number": "자동 번호", "overwrite": "덮어쓰기", "skip": "건너뛰기"}
 
 try:
     from version import __version__
@@ -624,6 +628,20 @@ class App(ctk.CTk):
             row=0, column=3, padx=(2, 8), pady=8
         )
 
+        # 파일명 중복 시 처리 정책
+        ctk.CTkLabel(dir_frame, text="파일명 중복 시:").grid(
+            row=1, column=0, padx=(8, 4), pady=(0, 8), sticky="w"
+        )
+        cur_policy = config.get_conflict_policy("number")
+        if cur_policy not in CONFLICT_POLICIES:
+            cur_policy = "number"
+        self.conflict_menu = ctk.CTkOptionMenu(
+            dir_frame, values=[CONFLICT_LABELS[p] for p in CONFLICT_POLICIES],
+            width=130, dynamic_resizing=False, command=self._on_conflict_change,
+        )
+        self.conflict_menu.set(CONFLICT_LABELS[cur_policy])
+        self.conflict_menu.grid(row=1, column=1, padx=4, pady=(0, 8), sticky="w")
+
         # --- 다운로드 버튼 + 진행률 ---
         bottom = ctk.CTkFrame(left, fg_color="transparent")
         bottom.pack(fill="x", padx=16, pady=(4, 12))
@@ -704,6 +722,16 @@ class App(ctk.CTk):
         except Exception as e:
             self._set_status(f"폴더 열기 실패: {e}")
 
+    def _on_conflict_change(self, _label=None):
+        config.set_conflict_policy(self._conflict_policy())
+
+    def _conflict_policy(self) -> str:
+        label = self.conflict_menu.get()
+        for value, lbl in CONFLICT_LABELS.items():
+            if lbl == label:
+                return value
+        return "number"
+
     def toggle_history(self):
         """우측 내역 패널을 열고 닫는다."""
         if self._history_visible:
@@ -758,10 +786,11 @@ class App(ctk.CTk):
             row.set_status("대기", color=("gray40", "gray60"))
 
         # 각 항목의 정보를 미리 추출(스레드에서 위젯 접근 방지)
+        policy = self._conflict_policy()
         jobs = [
             {
                 "row": row,
-                "params": row.get_params(),
+                "params": {**row.get_params(), "on_conflict": policy},
                 "title": row.info.title,
                 "quality": row.quality_text(),
             }
@@ -784,9 +813,16 @@ class App(ctk.CTk):
             try:
                 def hook(d, r=row, i=idx):
                     self._item_progress(d, r, i, total)
-                download(output_dir=out_dir, progress_callback=hook, **params)
+                result = download(output_dir=out_dir, progress_callback=hook, **params)
                 success += 1
-                self.after(0, lambda r=row: r.set_status("완료 ✓", color=("green", "#4caf50")))
+                if result.status == "skipped":
+                    message = "이미 있어 건너뜀"
+                    self.after(0, lambda r=row: r.set_status("건너뜀", color=("gray50", "gray60")))
+                elif result.status == "overwritten":
+                    message = "덮어씀"
+                    self.after(0, lambda r=row: r.set_status("완료(덮어씀) ✓", color=("green", "#4caf50")))
+                else:
+                    self.after(0, lambda r=row: r.set_status("완료 ✓", color=("green", "#4caf50")))
             except Exception as e:
                 status, message = "실패", str(e)
                 self.after(0, lambda r=row, m=message: r.set_status("실패", color=("red", "#e57373")))

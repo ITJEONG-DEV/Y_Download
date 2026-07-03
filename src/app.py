@@ -105,11 +105,9 @@ class DownloadRow(ctk.CTkFrame):
             anchor="w", justify="left",
         )
         self.title_label.pack(side="left", fill="x", expand=True)
-        # 컨테이너 폭에 맞춰 제목 줄바꿈 길이 갱신(반응형).
-        # 콜백 내부에서 위젯 속성을 직접 바꾸면 <Configure>가 재귀로 다시 불려
-        # 스택 오버플로가 난다. 그래서 라벨이 아닌 상위 컨테이너(right)에 바인딩하고
-        # 실제 갱신은 after_idle로 미뤄 재귀 고리를 끊는다.
-        right.bind("<Configure>", self._on_title_configure)
+        # 줄바꿈 폭은 App이 리사이즈(디바운스) 시 일괄로 갱신한다.
+        # (행마다 <Configure>를 바인딩하면 리사이즈 때 이벤트 폭주로 크게 느려짐)
+        self.title_label.configure(wraplength=500)  # 초기값
 
         # 2줄: 파일명 + 확장자
         namebar = ctk.CTkFrame(right, fg_color="transparent")
@@ -175,20 +173,12 @@ class DownloadRow(ctk.CTkFrame):
         entry.xview_moveto(1)
         return "break"
 
-    def _on_title_configure(self, event):
-        # 삭제버튼(~28) + 여백을 제외한 폭으로 줄바꿈 길이 계산
-        wl = max(120, event.width - 44)
+    def set_title_wraplength(self, wl: int):
+        """제목 줄바꿈 폭 설정. App이 리사이즈(디바운스) 시 일괄 호출한다."""
         if self._last_wl == wl:
             return
         self._last_wl = wl
-        # 콜백 안에서 바로 바꾸지 않고 미뤄서 <Configure> 재귀를 방지
-        self.after_idle(self._apply_wraplength, wl)
-
-    def _apply_wraplength(self, wl: int):
-        try:
-            self.title_label.configure(wraplength=wl)
-        except Exception:
-            pass
+        self.title_label.configure(wraplength=wl)
 
     # 포맷 전환 시 확장자/품질 옵션 갱신
     def _on_kind_change(self, _value=None):
@@ -290,9 +280,19 @@ class HistoryPanel(ctk.CTkFrame):
         self.list_frame = ctk.CTkScrollableFrame(self)
         self.list_frame.pack(fill="both", expand=True, padx=8, pady=(4, 8))
 
+        self._dirty = True
         self.render()
 
+    def mark_dirty(self):
+        self._dirty = True
+
+    def render_if_dirty(self):
+        """내역이 바뀐 경우에만 다시 그린다(패널 열 때 불필요한 재렌더 방지)."""
+        if self._dirty:
+            self.render()
+
     def render(self):
+        self._dirty = False
         for child in self.list_frame.winfo_children():
             child.destroy()
 
@@ -382,9 +382,32 @@ class App(ctk.CTk):
 
         self._build_ui()
 
+        # 리사이즈는 디바운스로 한 번만 반영(이벤트 폭주로 인한 지연 방지)
+        self._resize_after = None
+        self.bind("<Configure>", self._on_window_configure)
+
         # 실행 시 업데이트 확인 (패키지 빌드에서만; 개발 실행은 건너뜀)
         if updater.build_kind() != "dev":
             self.after(1500, self._start_update_check)
+
+    # ------------------------------------------------- 반응형(디바운스)
+    def _on_window_configure(self, event):
+        # 창 자체의 크기 변경만 처리(자식 위젯 이벤트 무시)
+        if event.widget is not self:
+            return
+        if self._resize_after is not None:
+            self.after_cancel(self._resize_after)
+        self._resize_after = self.after(120, self._apply_responsive_layout)
+
+    def _apply_responsive_layout(self):
+        self._resize_after = None
+        if not self.rows:
+            return
+        self.list_frame.update_idletasks()
+        # 목록 폭 기준으로 제목 줄바꿈 폭 계산(썸네일·버튼·스크롤바·여백 감안)
+        wl = max(120, self.list_frame.winfo_width() - 190)
+        for row in self.rows:
+            row.set_title_wraplength(wl)
 
     # ------------------------------------------------- 자동 업데이트
     def _start_update_check(self):
@@ -564,6 +587,7 @@ class App(ctk.CTk):
         self.rows.append(row)
         self.add_btn.configure(state="normal", text="목록에 추가")
         self._set_status(f"추가됨: {info.title}  (총 {len(self.rows)}개)")
+        self.after(30, self._apply_responsive_layout)  # 새 행 제목 줄바꿈 폭 반영
 
     def _on_add_error(self, err: Exception):
         self.add_btn.configure(state="normal", text="목록에 추가")
@@ -602,7 +626,7 @@ class App(ctk.CTk):
             self._history_visible = False
             self._resize_for_panel(opening=False)
         else:
-            self.history_panel.render()
+            self.history_panel.render_if_dirty()
             self.history_panel.pack(side="right", fill="y", padx=(0, 8), pady=8)
             self._history_visible = True
             self._resize_for_panel(opening=True)
@@ -722,9 +746,11 @@ class App(ctk.CTk):
         for row in self.rows:
             row.set_controls_enabled(True)
         self._set_status(f"완료: {success}/{total}개 다운로드됨")
-        # 내역 패널이 열려 있으면 갱신
-        if self._history_visible and self.history_panel is not None:
-            self.history_panel.render()
+        # 내역이 바뀌었으니 표시. 열려 있으면 즉시, 닫혀 있으면 다음에 열 때 갱신.
+        if self.history_panel is not None:
+            self.history_panel.mark_dirty()
+            if self._history_visible:
+                self.history_panel.render()
 
     # -------------------------------------------------------------- 유틸
     def _load_thumbnail(self, url: str):

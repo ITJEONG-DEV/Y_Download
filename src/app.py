@@ -121,17 +121,19 @@ def _clamp_text(text: str, font, width: int, max_lines: int = 2) -> str:
     return "\n".join(lines)
 
 
-def _wrap_around(text: str, font, first_width: int, full_width: int) -> str:
-    """첫 줄은 first_width(버튼 자리 피함), 이후 줄은 full_width로 줄바꿈(float 흉내)."""
+def _wrap_around(text: str, font, first_width: int, full_width: int, narrow_lines: int = 2) -> str:
+    """
+    앞의 narrow_lines 줄은 first_width(버튼 자리 피함), 그 다음 줄부터 full_width로 줄바꿈.
+    버튼 높이가 텍스트 두 줄에 걸치므로 기본 2줄까지 좁게 흐른다(float 흉내).
+    """
     text = (text or "").replace("\n", " ")
     lines: list[str] = []
     cur = ""
-    width = first_width
     for ch in text:
+        width = first_width if len(lines) < narrow_lines else full_width
         if cur and font.measure(cur + ch) > width:
             lines.append(cur)
             cur = ch
-            width = full_width  # 둘째 줄부터 전체 폭
         else:
             cur += ch
     if cur:
@@ -425,12 +427,12 @@ class HistoryPanel(ctk.CTkFrame):
         btns = ctk.CTkFrame(row, fg_color="transparent")
         btns.place(relx=1.0, rely=0.0, x=-6, y=6, anchor="ne")
         ctk.CTkButton(
-            btns, text="＋", width=30, height=24,
+            btns, text="＋", width=27, height=24,
             font=ctk.CTkFont(size=15, weight="bold"),
             command=lambda u=entry.get("url"): self._readd(u),
         ).pack(side="left", padx=(0, 3))  # 목록에 추가(강조색)
         ctk.CTkButton(
-            btns, text="🗑", width=30, height=24,
+            btns, text="🗑", width=27, height=24,
             fg_color="#c0392b", hover_color="#a93226", text_color="white",
             command=lambda i=eid: self._delete(i),
         ).pack(side="left")  # 내역에서 삭제

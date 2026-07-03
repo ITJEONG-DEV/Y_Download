@@ -23,8 +23,10 @@
 | 6 | 저장 위치는 **일괄(공통) 설정** | ✅ 구현 |
 | 7 | **마지막 저장 위치 기억** (settings.json) | ✅ 구현 |
 | 8 | **선택 포맷/품질 기준 예상 파일 크기 표시** | ✅ 구현 |
-| 9 | **다운로드 내역(성공/실패) 기록·조회, 더블클릭 재추가** | ✅ 구현 |
-| 10 | 배포용 단독 실행 exe | ⬜ 예정 (PyInstaller) |
+| 9 | **다운로드 내역**: 성공/실패 기록, 우측 사이드 패널로 조회, 더블클릭 재추가, 단일·전체 삭제 | ✅ 구현 |
+| 10 | **파일명 입력 커서 편의**: Up=맨앞 / Down=맨뒤 | ✅ 구현 |
+| 11 | **반응형 목록 행**: 폭에 따라 제목 줄바꿈·파일명 신축(잘림 방지) | ✅ 구현 |
+| 12 | 배포용 단독 실행 exe | ⬜ 예정 (PyInstaller) |
 
 ---
 
@@ -63,15 +65,22 @@ Y_Download/
 
 ### 모듈 책임 분리
 - **downloader.py** — GUI와 완전 분리. 단독 CLI 테스트 가능(`python src/downloader.py`).
-  - `fetch_info(url) -> VideoInfo` : 제목·썸네일·길이·업로더·사용 가능 해상도 조회
+  - `fetch_info(url) -> VideoInfo` : 제목·썸네일·길이·업로더·사용 가능 해상도 + 크기추정 데이터 조회
   - `download(url, output_dir, *, kind, ext, max_height, audio_bitrate, filename, progress_callback) -> str`
-  - `sanitize_filename(name)` : 파일명 사용 불가 문자 제거
+  - `estimate_size(info, *, kind, max_height, audio_bitrate) -> int|None` : 예상 파일 크기(bytes)
+  - `format_size(bytes) -> str` : 사람이 읽는 크기 문자열, `sanitize_filename(name)` : 파일명 정리
   - `VideoInfo` 데이터클래스, `VIDEO_EXTS`/`AUDIO_EXTS` 상수
+- **config.py** — 설정·내역 JSON 영구저장(`%APPDATA%/YouTubeDownloader/`).
+  - `get_download_dir/set_download_dir` : 마지막 저장 위치 기억(settings.json)
+  - `load_history/add_history/delete_history/clear_history` : 내역(history.json), 항목마다 고유 `id`
 - **app.py** — UI만 담당. 조회/다운로드 등 무거운 작업은 **스레드**에서 실행하고
   `self.after(0, ...)`로 메인 스레드에서 UI 갱신 (tkinter 스레드 안전성 확보).
-  - `DownloadRow(CTkFrame)` : 목록의 한 항목. 자체 위젯 + `VideoInfo` 보유.
-    - `get_params()` : 그 항목의 다운로드 파라미터 dict 반환
-  - `App(CTk)` : 전체 창. URL 추가 / 목록 관리 / 저장위치 / 일괄 다운로드.
+  - `DownloadRow(CTkFrame)` : 목록의 한 항목. 중첩 pack 레이아웃(반응형), 자체 위젯 + `VideoInfo` 보유.
+    - `get_params()` : 다운로드 파라미터 dict 반환, `_cursor_home/_cursor_end` : 파일명 커서 이동
+    - `_update_estimate()` : 포맷/품질 변경 시 예상 크기 갱신
+  - `HistoryPanel(CTkFrame)` : 우측 내역 사이드 패널. 더블클릭 재추가 / 🗑 단일삭제 / 전체 지우기.
+  - `App(CTk)` : 좌우 분할 창(좌=목록, 우=내역 패널). URL 추가 / 목록 관리 / 저장위치 / 일괄 다운로드.
+    - `toggle_history()` + `_resize_for_panel()` : 패널 토글 및 창모드/최대화별 폭 조정.
 
 ---
 
@@ -89,6 +98,19 @@ Y_Download/
 - 포맷을 "음원"으로 바꾸면 확장자 목록이 `mp3/m4a/wav`, 품질이 비트레이트(320~128)로 자동 전환.
 - 포맷이 "영상"이면 확장자 `mp4/mkv/webm`, 품질은 조회된 실제 해상도 목록.
 - 진행률: 항목별 % + 전체 진행바(완료 항목 수 + 현재 항목 진행분).
+
+### UI/UX 세부
+- **예상 크기**: 각 행에 `예상: 45.3 MB` 표시, 포맷/품질 변경 시 실시간 갱신.
+- **파일명 커서**: 파일명 입력창 포커스 상태에서 `Up`=커서 맨앞, `Down`=커서 맨뒤.
+- **레이아웃 안정화**: OptionMenu는 `dynamic_resizing=False`로 폭 고정, 상태·예상크기 라벨은
+  고정 폭 셀(`pack_propagate(False)`)에 배치 → 텍스트/포맷 변경 시 정렬 흔들림 없음.
+- **반응형**: 제목 라벨은 폭에 맞춰 줄바꿈(`<Configure>`→wraplength), 파일명 입력창은 신축.
+- **내역 패널**: 우측 사이드 패널(폭 320px). 창모드에선 열/닫을 때 창 폭을 패널만큼 확장/축소
+  (화면 폭 상한), 최대화 상태에선 목록과 공간 분할. 항목 형식은
+  `파일명 (영상명) · 성공여부` / `일시 포맷/확장자 품질`.
+
+> 알려진 이슈: 창 크기 조정 시 재렌더링이 다소 느림 — CustomTkinter가 리사이즈마다 모든
+> 위젯 캔버스를 다시 그리는 구조적 한계. 심할 경우 §7의 대응 옵션 참고.
 
 ---
 
@@ -140,7 +162,9 @@ pyinstaller --noconfirm --windowed --name "YouTubeDownloader" ^
 - [x] 스레드 기반 비동기 조회/다운로드 + 진행률
 - [x] 마지막 저장 위치 기억 (`config.py` → settings.json)
 - [x] 선택 포맷/품질 기준 예상 파일 크기 표시 (`estimate_size`)
-- [x] 다운로드 내역(성공/실패) 기록·조회 창, 더블클릭 시 목록 재추가
+- [x] 다운로드 내역(성공/실패) 기록·조회, 더블클릭 시 목록 재추가
+- [x] 내역을 우측 사이드 패널로 전환 + 단일(🗑)·전체 삭제, 패널 토글 시 창 폭 조정
+- [x] 파일명 입력 커서 편의(Up/Down), OptionMenu 폭 고정, 반응형 행 레이아웃
 - [x] 의존성 설치 및 핵심 로직(`fetch_info`/`estimate_size`/`config`) 동작 검증
 
 ### 다음 할 일 (우선순위 순)
@@ -161,6 +185,12 @@ pyinstaller --noconfirm --windowed --name "YouTubeDownloader" ^
 - 현재 조회는 `noplaylist=True`로 플레이리스트 URL이면 첫 영상만 처리.
 - Python 3.14는 비교적 최신 → 일부 패키지 휠 미제공 가능성. 문제 시 3.12 사용 검토.
 - yt-dlp는 유튜브 변경에 따라 수시 업데이트 필요(`pip install -U yt-dlp`).
+- 이모지(🗑/✅/❌)가 일부 환경에서 네모(□)로 보일 수 있음 → 필요 시 텍스트/기호로 대체.
+
+### 리사이즈 재렌더링 지연 대응 옵션 (필요 시)
+- 리사이즈 중 썸네일 재스케일 생략(디바운스)로 부담 완화.
+- 목록을 더 가벼운 위젯으로 렌더링(작업량 큼).
+- 근본 해결이 필요하면 **PySide6(Qt)** 로 GUI 전환 검토(네이티브라 리사이즈가 부드러움, 큰 재작성).
 
 ---
 

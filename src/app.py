@@ -751,17 +751,24 @@ class App(ctk.CTk):
         내역 패널 폭만큼 창 폭을 넓히거나(+1) 줄인다(-1).
         최대화(zoomed) 상태면 창을 바꾸지 않아 목록이 패널과 공간을 나눈다.
         update_idletasks를 호출하지 않아, geometry 변경과 pack이 한 번의 레이아웃으로 합쳐진다.
+        경계 판단은 주모니터가 아니라 '가상 데스크톱(모든 모니터)' 기준 — 보조 모니터에서
+        창이 주모니터로 튀는 문제 방지.
         """
         if self.state() == "zoomed":
             return
         delta = (HISTORY_PANEL_WIDTH + HISTORY_PANEL_GAP) * sign
         w, h = self.winfo_width(), self.winfo_height()
         x, y = self.winfo_x(), self.winfo_y()
-        screen_w = self.winfo_screenwidth()
+        b = _virtual_screen_bounds()
+        if b:
+            vx, vy, vw, vh = b
+            left_bound, right_bound = vx, vx + vw
+        else:
+            left_bound, right_bound = 0, self.winfo_screenwidth()
         if sign > 0:
-            new_w = min(w + delta, screen_w)
-            if x + new_w > screen_w:            # 화면 밖으로 나가면 왼쪽으로 당김
-                x = max(0, screen_w - new_w)
+            new_w = min(w + delta, right_bound - left_bound)
+            if x + new_w > right_bound:          # 가상 데스크톱 오른쪽 밖으로 나갈 때만 안쪽으로 당김
+                x = max(left_bound, right_bound - new_w)
         else:
             new_w = max(MIN_WINDOW_WIDTH, w + delta)
         self.geometry(f"{new_w}x{h}+{x}+{y}")

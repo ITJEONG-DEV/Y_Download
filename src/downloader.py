@@ -69,26 +69,40 @@ ProgressCallback = Callable[[dict], None]
 # ---------------------------------------------------------------------------
 def _ffmpeg_location() -> Optional[str]:
     """
-    번들된 ffmpeg가 있으면 그 경로를 반환한다.
-    PyInstaller로 묶을 때 ffmpeg.exe를 함께 포함시키면
-    sys._MEIPASS 아래에 위치한다. 없으면 None을 반환하여
+    ffmpeg.exe가 있는 디렉터리를 찾아 반환한다. 못 찾으면 None을 반환해
     yt-dlp가 시스템 PATH에서 ffmpeg를 찾도록 둔다.
+
+    탐색 우선순위:
+      1) PyInstaller 번들(폴더형 exe): sys._MEIPASS/ffmpeg, sys._MEIPASS
+      2) 실행 파일 옆(라이트형 exe 사용자가 직접 배치): <exe>/, <exe>/ffmpeg, <exe>/bin
+      3) 개발 환경: 프로젝트 ../bin
     """
-    # PyInstaller 번들 환경
+    candidates: list[str] = []
+
+    # 1) 번들(폴더형)에 포함된 ffmpeg
     base = getattr(sys, "_MEIPASS", None)
     if base:
-        candidate = os.path.join(base, "ffmpeg", "ffmpeg.exe")
-        if os.path.exists(candidate):
-            return os.path.dirname(candidate)
-        candidate = os.path.join(base, "ffmpeg.exe")
-        if os.path.exists(candidate):
-            return base
+        candidates += [os.path.join(base, "ffmpeg"), base]
 
-    # 프로젝트 로컬 bin/ 폴더 (선택적으로 ffmpeg.exe를 여기 둘 수 있음)
-    local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin")
-    local = os.path.normpath(local)
-    if os.path.exists(os.path.join(local, "ffmpeg.exe")):
-        return local
+    # 2) 얼어있는(frozen) exe 옆 — 라이트형에서 사용자가 직접 넣는 경우
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        candidates += [
+            exe_dir,
+            os.path.join(exe_dir, "ffmpeg"),
+            os.path.join(exe_dir, "bin"),
+        ]
+
+    # 3) 개발 환경: 프로젝트 로컬 bin/
+    candidates.append(
+        os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin")
+        )
+    )
+
+    for d in candidates:
+        if d and os.path.exists(os.path.join(d, "ffmpeg.exe")):
+            return d
 
     return None  # 시스템 PATH 사용
 

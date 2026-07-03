@@ -19,7 +19,16 @@ pip install -r requirements.txt
 python src/app.py
 ```
 
+## 배포용 exe 빌드
+```powershell
+pip install pyinstaller
+python build.py          # full(폴더형+ffmpeg) + lite(단일파일) 모두 빌드
+```
+- **full**: `dist/YouTubeDownloader/` — ffmpeg 포함, 폴더째 zip으로 배포
+- **lite**: `dist/YouTubeDownloader-lite.exe` — 단일 파일, ffmpeg 미포함
+  ([`docs/lite-ffmpeg-안내.md`](docs/lite-ffmpeg-안내.md) 동봉)
+
 ## 기술 스택
-Python · yt-dlp · CustomTkinter · Pillow · ffmpeg
+Python · yt-dlp · CustomTkinter · Pillow · ffmpeg · PyInstaller
 
 자세한 개발 정보와 진행 상황은 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) 참고.

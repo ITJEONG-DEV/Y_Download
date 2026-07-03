@@ -137,19 +137,40 @@ python src/app.py
 
 ---
 
-## 6. 배포 (exe 빌드) — 예정 작업
+## 6. 배포 (exe 빌드) — ✅ 구현 (`build.py`)
+
+두 가지 산출물을 만든다.
+
+| 산출물 | 명령 | 방식 | ffmpeg | 결과물 |
+|--------|------|------|--------|--------|
+| **full (기본)** | `python build.py full` | 폴더형(onedir) | **포함** | `dist/YouTubeDownloader/` (~496MB) |
+| **lite (라이트)** | `python build.py lite` | 단일파일(onefile) | 미포함 | `dist/YouTubeDownloader-lite.exe` (~39MB) |
 
 ```powershell
 pip install pyinstaller
-
-pyinstaller --noconfirm --windowed --name "YouTubeDownloader" ^
-  --add-binary "bin/ffmpeg.exe;ffmpeg" ^
-  src/app.py
+python build.py           # full + lite 모두
+python build.py full      # 폴더형만
+python build.py lite      # 라이트만
 ```
 
-- `downloader.py._ffmpeg_location()`이 PyInstaller 번들(`sys._MEIPASS/ffmpeg/ffmpeg.exe`)을
-  자동 탐색하도록 이미 구현되어 있음 → 빌드 시 ffmpeg.exe만 위 경로로 포함하면 됨.
-- 아이콘 지정: `--icon app.ico` 추가.
+- 공통: `--windowed --collect-all customtkinter --collect-submodules/-data yt_dlp`, `--paths src`.
+- full: `bin/ffmpeg.exe`, `bin/ffprobe.exe`를 `ffmpeg/` 하위로 번들 → 런타임에 자동 인식.
+- 아이콘: `assets/app.ico`가 있으면 자동 적용(`--icon`).
+- 검증됨: 두 빌드 성공, full exe 실행 시 GUI 정상 기동(스모크 테스트 통과).
+
+### ffmpeg 탐색 순서 (`downloader.py._ffmpeg_location`)
+1. **번들(full)**: `sys._MEIPASS/ffmpeg/ffmpeg.exe` (폴더형의 `_internal/ffmpeg/`)
+2. **실행파일 옆(lite)**: `<exe>/ffmpeg.exe`, `<exe>/ffmpeg/ffmpeg.exe`, `<exe>/bin/ffmpeg.exe`
+3. **개발 환경**: 프로젝트 `../bin/ffmpeg.exe`
+4. 위 모두 없으면 **시스템 PATH**의 ffmpeg 사용
+
+### 배포 방법
+- **full**: `dist/YouTubeDownloader/` 폴더 전체를 zip으로 압축해 전달 → 받는 사람은 압축 풀고
+  `YouTubeDownloader.exe` 실행. ffmpeg 포함이라 추가 설치 불필요.
+- **lite**: `YouTubeDownloader-lite.exe` 단일 파일. **ffmpeg 미포함**이므로 받는 사람이 아래 중 하나 필요:
+  - 시스템에 ffmpeg 설치(`winget install Gyan.FFmpeg`), 또는
+  - `ffmpeg.exe`를 **exe와 같은 폴더**(또는 그 아래 `ffmpeg/`·`bin/`)에 배치.
+  - → 이 안내를 lite exe와 함께 동봉할 것. (`docs/lite-ffmpeg-안내.md` 참고)
 
 ---
 
@@ -166,14 +187,15 @@ pyinstaller --noconfirm --windowed --name "YouTubeDownloader" ^
 - [x] 내역을 우측 사이드 패널로 전환 + 단일(🗑)·전체 삭제, 패널 토글 시 창 폭 조정
 - [x] 파일명 입력 커서 편의(Up/Down), OptionMenu 폭 고정, 반응형 행 레이아웃
 - [x] 의존성 설치 및 핵심 로직(`fetch_info`/`estimate_size`/`config`) 동작 검증
+- [x] PyInstaller 배포 빌드(`build.py`): full(폴더형+ffmpeg) / lite(단일파일) 2종, exe 기동 검증
 
 ### 다음 할 일 (우선순위 순)
-- [ ] **GUI 실행 테스트** (창 표시·버튼 동작은 디스플레이 있는 환경에서 확인 필요)
-- [ ] ffmpeg 배치 후 실제 영상/음원 다운로드 최종 검증 (bin/ffmpeg.exe 사용)
+- [ ] **실제 다운로드 최종 검증** (full/lite exe에서 영상·음원 다운로드까지 확인)
 - [ ] 예외 처리 다듬기 (잘못된 URL, 지역제한, 네트워크 오류 메시지 한글화)
 - [ ] 파일명 중복 시 처리(덮어쓰기/자동 번호) 정책 결정
 - [ ] 다운로드 취소 버튼
-- [ ] PyInstaller exe 빌드 및 배포 검증
+- [ ] 앱 아이콘(`assets/app.ico`) 제작 후 빌드에 반영
+- [ ] full 배포 용량 축소 검토 (ffmpeg essentials 빌드로 교체 시 ~85MB)
 - [ ] (선택) 플레이리스트 전체 추가 기능
 - [ ] (선택) 내역에 저장 경로/파일명 저장해 "폴더 열기" 기능
 

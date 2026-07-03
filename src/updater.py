@@ -26,8 +26,11 @@ from urllib.request import Request, urlopen
 REPO = "ITJEONG-DEV/Y_Download"
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
 
-# Windows 프로세스 생성 플래그 (도우미 배치를 창 없이 분리 실행)
-_DETACHED_NO_WINDOW = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
+# 숨김 콘솔로 실행(콘솔은 있으되 보이지 않음) — ping/start 등이 정상 동작하도록 DETACHED는 쓰지 않음
+_CREATE_NO_WINDOW = 0x08000000
+
+# 도우미 배치 로그(문제 발생 시 확인용, 고정 경로)
+_LOG_PATH = os.path.join(tempfile.gettempdir(), "Y_Downloader_update.log")
 
 
 # ---------------------------------------------------------------------------
@@ -122,16 +125,53 @@ def _find(root: str, filename: str) -> Optional[str]:
     return None
 
 
-def _launch_and_exit_helper(bat_text: str, tmp: str) -> None:
-    """도우미 배치를 파일로 쓰고 창 없이 분리 실행한다(현재 프로세스 종료 대기)."""
-    bat = os.path.join(tmp, "_update.bat")
+def _wait_block(pid: int, log: str) -> str:
+    """현재 프로세스(pid) 종료를 기다리는 배치 조각. timeout 대신 ping으로 지연(콘솔 불필요)."""
+    return (
+        f'echo [update] waiting for pid {pid} >> "{log}"\r\n'
+        ":wait\r\n"
+        f'tasklist /FI "PID eq {pid}" | find "{pid}" >nul || goto proceed\r\n'
+        "ping -n 2 127.0.0.1 >nul\r\n"
+        "goto wait\r\n"
+        ":proceed\r\n"
+        "ping -n 2 127.0.0.1 >nul\r\n"
+    )
+
+
+def _lite_bat(pid: int, cur: str, new: str, log: str) -> str:
+    # 실행 중 exe는 덮어쓰기는 불가하지만 이동(rename)은 가능 → 이동 후 새 파일 복사
+    return (
+        "@echo off\r\n"
+        f'echo [update] lite start > "{log}"\r\n'
+        + _wait_block(pid, log)
+        + f'move /y "{cur}" "{cur}.old" >> "{log}" 2>&1\r\n'
+        + f'copy /y "{new}" "{cur}" >> "{log}" 2>&1\r\n'
+        + f'if errorlevel 1 ( ping -n 3 127.0.0.1 >nul & copy /y "{new}" "{cur}" >> "{log}" 2>&1 )\r\n'
+        + f'start "" "{cur}"\r\n'
+        + f'del "{cur}.old" >nul 2>&1\r\n'
+        + f'echo [update] lite done >> "{log}"\r\n'
+    )
+
+
+def _full_bat(pid: int, extract: str, app_dir: str, exe_name: str, log: str) -> str:
+    # 프로세스 완전 종료 후 폴더 덮어쓰기(잠금 해제됨). 전송 실패 시 재시도(/R /W).
+    return (
+        "@echo off\r\n"
+        f'echo [update] full start > "{log}"\r\n'
+        + _wait_block(pid, log)
+        + f'robocopy "{extract}" "{app_dir}" /E /IS /IT /R:5 /W:1 >> "{log}" 2>&1\r\n'
+        + f'start "" "{os.path.join(app_dir, exe_name)}"\r\n'
+        + f'echo [update] full done >> "{log}"\r\n'
+    )
+
+
+def _launch_helper(bat_text: str) -> None:
+    """도우미 배치를 별도 임시폴더에 쓰고 숨김 콘솔로 실행(부모 종료와 독립)."""
+    helper_dir = tempfile.mkdtemp(prefix="ydl_helper_")
+    bat = os.path.join(helper_dir, "update.bat")
     with open(bat, "w", encoding="utf-8") as f:
         f.write(bat_text)
-    subprocess.Popen(
-        ["cmd", "/c", bat],
-        creationflags=_DETACHED_NO_WINDOW,
-        close_fds=True,
-    )
+    subprocess.Popen(["cmd", "/c", bat], creationflags=_CREATE_NO_WINDOW, close_fds=True)
 
 
 def download_and_apply(
@@ -142,6 +182,7 @@ def download_and_apply(
     """
     최신 자산을 받아 교체 도우미 배치를 실행한다. 이 함수가 리턴한 뒤
     호출자는 앱을 종료해야 배치가 파일 교체를 진행한다.
+    문제 진단 로그: %TEMP%/Y_Downloader_update.log
     """
     if kind == "dev":
         raise RuntimeError("개발 실행에서는 자동 업데이트를 적용할 수 없습니다.")
@@ -159,34 +200,16 @@ def download_and_apply(
         z.extractall(extract)
 
     pid = os.getpid()
-    wait_block = (
-        f':wait\r\n'
-        f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul\r\n'
-        f'if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto wait )\r\n'
-    )
+    log = _LOG_PATH
 
     if kind == "lite":
         new_exe = _find(extract, "Y_Downloader-lite.exe")
         if not new_exe:
             raise RuntimeError("압축에서 lite exe를 찾지 못했습니다.")
-        cur_exe = sys.executable
-        bat = (
-            "@echo off\r\n"
-            + wait_block
-            + f'copy /y "{new_exe}" "{cur_exe}" >nul\r\n'
-            + f'start "" "{cur_exe}"\r\n'
-            + f'rmdir /s /q "{tmp}"\r\n'
-        )
+        bat = _lite_bat(pid, sys.executable, new_exe, log)
     else:  # full (onedir)
         app_dir = os.path.dirname(sys.executable)
         exe_name = os.path.basename(sys.executable)
-        bat = (
-            "@echo off\r\n"
-            + wait_block
-            # 새 폴더 내용을 앱 폴더에 덮어쓰기(추가/변경만, 사용자 데이터 삭제 없음)
-            + f'robocopy "{extract}" "{app_dir}" /E /NFL /NDL /NJH /NJS /NP >nul\r\n'
-            + f'start "" "{os.path.join(app_dir, exe_name)}"\r\n'
-            + f'rmdir /s /q "{tmp}"\r\n'
-        )
+        bat = _full_bat(pid, extract, app_dir, exe_name, log)
 
-    _launch_and_exit_helper(bat, tmp)
+    _launch_helper(bat)

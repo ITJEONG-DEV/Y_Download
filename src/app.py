@@ -426,15 +426,16 @@ class HistoryPanel(ctk.CTkFrame):
             btnbar = ctk.CTkFrame(row, fg_color="transparent")
             btnbar.pack(fill="x", padx=8, pady=(0, 8))
             ctk.CTkButton(
-                btnbar, text="목록에 추가", width=100, height=26,
+                btnbar, text="＋", width=36, height=26,
+                font=ctk.CTkFont(size=16, weight="bold"),
                 command=lambda u=entry.get("url"): self._readd(u),
-            ).pack(side="left")
+            ).pack(side="left")  # 목록에 추가(주 동작 — 강조색)
             ctk.CTkButton(
-                btnbar, text="🗑", width=32, height=26,
+                btnbar, text="🗑", width=36, height=26,
                 fg_color="transparent", text_color=("gray40", "gray60"),
                 hover_color=("gray80", "gray30"),
                 command=lambda i=eid: self._delete(i),
-            ).pack(side="right")
+            ).pack(side="right")  # 내역에서 삭제
 
     def _load_thumb_image(self, path):
         if not path or not os.path.exists(path):

@@ -382,26 +382,42 @@ class HistoryPanel(ctk.CTkFrame):
         )
         msg = entry.get("message")
 
+        title_w = self._clamp_w - 72  # 우측 버튼 공간만큼 제목 폭을 좁힘
         if expanded:
             primary_text = primary                        # 전체 표시(자동 줄바꿈)
             detail_text = detail + (f"\n{msg}" if msg else "")
             arrow = "▾ "
         else:
-            primary_text = _clamp_text(primary, self.item_font, self._clamp_w, 1)  # 1줄
+            primary_text = _clamp_text(primary, self.item_font, title_w, 1)   # 1줄
             detail_text = _clamp_text(detail, self.item_font, self._clamp_w, 1)
             arrow = "▸ "
 
         click_targets = [row]
 
-        # 1) 제목
+        # 상단: 제목(좌) + 추가/삭제 버튼(우) — 접힘·펼침 모두 노출
+        top = ctk.CTkFrame(row, fg_color="transparent")
+        top.pack(fill="x", padx=8, pady=(6, 2))
+        click_targets.append(top)
+
+        ctk.CTkButton(
+            top, text="🗑", width=30, height=24,
+            fg_color="#c0392b", hover_color="#a93226", text_color="white",
+            command=lambda i=eid: self._delete(i),
+        ).pack(side="right", padx=(3, 0))  # 내역에서 삭제
+        ctk.CTkButton(
+            top, text="＋", width=30, height=24,
+            font=ctk.CTkFont(size=15, weight="bold"),
+            command=lambda u=entry.get("url"): self._readd(u),
+        ).pack(side="right", padx=(3, 0))  # 목록에 추가(강조색)
+
         p = ctk.CTkLabel(
-            row, text=arrow + primary_text, anchor="w", justify="left",
-            text_color=color, wraplength=self._clamp_w + 20, font=self.item_font,
+            top, text=arrow + primary_text, anchor="w", justify="left",
+            text_color=color, wraplength=title_w + 6, font=self.item_font,
         )
-        p.pack(fill="x", padx=8, pady=(6, 2))
+        p.pack(side="left", fill="x", expand=True)
         click_targets.append(p)
 
-        # 2) 썸네일 (펼침 + 있을 때) — 제목 아래
+        # 썸네일 (펼침 + 있을 때) — 제목 아래
         if expanded:
             img = self._load_thumb_image(entry.get("thumb"))
             if img is not None:
@@ -410,31 +426,17 @@ class HistoryPanel(ctk.CTkFrame):
                 thumb_lbl.pack(padx=8, pady=2)
                 click_targets.append(thumb_lbl)
 
-        # 3) 날짜/포맷 등
+        # 날짜/포맷 등
         d = ctk.CTkLabel(
             row, text=detail_text, anchor="w", justify="left",
             text_color=("gray40", "gray60"), wraplength=self._clamp_w + 20,
         )
-        d.pack(fill="x", padx=8, pady=(0, 4))
+        d.pack(fill="x", padx=8, pady=(0, 6))
         click_targets.append(d)
 
         # 클릭 → 펼침/접힘 토글 (버튼 제외)
         for w in click_targets:
             w.bind("<Button-1>", lambda e, i=eid: self._toggle_expand(i))
-
-        if expanded:
-            btnbar = ctk.CTkFrame(row, fg_color="transparent")
-            btnbar.pack(fill="x", padx=8, pady=(0, 8))
-            ctk.CTkButton(
-                btnbar, text="＋", width=36, height=26,
-                font=ctk.CTkFont(size=16, weight="bold"),
-                command=lambda u=entry.get("url"): self._readd(u),
-            ).pack(side="left")  # 목록에 추가(주 동작 — 강조색)
-            ctk.CTkButton(
-                btnbar, text="🗑", width=36, height=26,
-                fg_color="#c0392b", hover_color="#a93226", text_color="white",
-                command=lambda i=eid: self._delete(i),
-            ).pack(side="right")  # 내역에서 삭제(빨강으로 버튼임을 명확히)
 
     def _load_thumb_image(self, path):
         if not path or not os.path.exists(path):

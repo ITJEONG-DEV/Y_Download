@@ -57,6 +57,10 @@ AUDIO_BITRATES = ["320", "256", "192", "128"]
 HISTORY_PANEL_WIDTH = 320
 HISTORY_PANEL_GAP = 16
 
+# 창 최소 크기
+MIN_WINDOW_WIDTH = 820
+MIN_WINDOW_HEIGHT = 580
+
 
 def _quality_label(h: int) -> str:
     return HEIGHT_LABELS.get(h, f"{h}p")
@@ -348,7 +352,7 @@ class App(ctk.CTk):
         super().__init__()
         self.title("YouTube Downloader")
         self.geometry("880x660")
-        self.minsize(820, 580)
+        self.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
 
         self.rows: list[DownloadRow] = []
         self._downloading = False
@@ -510,14 +514,13 @@ class App(ctk.CTk):
         w, h = self.winfo_width(), self.winfo_height()
         x, y = self.winfo_x(), self.winfo_y()
         screen_w = self.winfo_screenwidth()
-        min_w = self.minsize()[0]
 
         if opening:
             new_w = min(w + delta, screen_w)
             if x + new_w > screen_w:            # 화면 밖으로 나가면 왼쪽으로 당김
                 x = max(0, screen_w - new_w)
         else:
-            new_w = max(min_w, w - delta)
+            new_w = max(MIN_WINDOW_WIDTH, w - delta)
         self.geometry(f"{new_w}x{h}+{x}+{y}")
 
     def on_download_all(self):

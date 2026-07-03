@@ -279,6 +279,7 @@ git push origin v1.2.0
 - [x] 창 위치/크기/최대화 상태 기억(settings.json) — 종료 시 저장, 실행 시 복원.
   가상 데스크톱 경계(ctypes)로 화면 밖·모니터 제거 감지 → 주모니터 중앙 기본크기로 폴백.
 - [x] **자동 업데이트 실전 검증 완료** (v0.1.4 → v0.1.5: 알림 모달 → [확인] → 교체·재시작).
+- [x] Auto update handles non-ASCII paths: replaced `cmd` batch helper with UTF-8 BOM PowerShell helper and `-LiteralPath`.
 - [x] 파일명 중복 처리 정책(자동번호/덮어쓰기/건너뛰기) — 설정 드롭다운·기억, `download()`가
   `DownloadResult(path, status)` 반환(status: downloaded/skipped/overwritten).
 

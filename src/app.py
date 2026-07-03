@@ -151,9 +151,16 @@ class DownloadRow(ctk.CTkFrame):
         self._on_remove = on_remove
         self._last_wl = 0
 
+        self.index_label = ctk.CTkLabel(
+            self, text="", width=34, anchor="center",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=("gray35", "gray65"),
+        )
+        self.index_label.pack(side="left", fill="y", padx=(8, 0), pady=8)
+
         # 썸네일 (고정)
         self.thumb_label = ctk.CTkLabel(self, text="", image=thumb, width=120, height=68)
-        self.thumb_label.pack(side="left", padx=8, pady=8)
+        self.thumb_label.pack(side="left", padx=(6, 8), pady=8)
 
         # 우측 콘텐츠 (가변 폭 — 창/목록 폭에 따라 늘고 줄어듦)
         right = ctk.CTkFrame(self, fg_color="transparent")
@@ -227,6 +234,9 @@ class DownloadRow(ctk.CTkFrame):
         self.size_label.pack(side="left", fill="x")
 
         self._apply_video_options()
+
+    def set_index(self, index: int):
+        self.index_label.configure(text=str(index))
 
     # 파일명 입력창 커서 이동 편의 (Up=맨앞, Down=맨뒤)
     def _cursor_home(self, _event=None):
@@ -614,10 +624,23 @@ class App(ctk.CTk):
         if not force and w == self._last_list_w:
             return
         self._last_list_w = w
-        # 목록 폭 기준으로 제목 줄바꿈 폭 계산(썸네일·버튼·스크롤바·여백 감안)
-        wl = max(120, w - 190)
+        # Reserve space for row number, thumbnail, remove button, scrollbar, and padding.
+        wl = max(120, w - 230)
         for row in self.rows:
             row.set_title_wraplength(wl)
+
+    def _update_list_header(self):
+        count = len(self.rows)
+        title = "\ub2e4\uc6b4\ub85c\ub4dc \ubaa9\ub85d" if count == 0 else f"\ub2e4\uc6b4\ub85c\ub4dc \ubaa9\ub85d ({count}\uac1c)"
+        self.list_frame.configure(label_text=title)
+
+    def _renumber_rows(self):
+        for index, row in enumerate(self.rows, start=1):
+            row.set_index(index)
+
+    def _refresh_list_state(self):
+        self._update_list_header()
+        self._renumber_rows()
 
     # ------------------------------------------------- 자동 업데이트
     def _start_update_check(self):
@@ -811,6 +834,7 @@ class App(ctk.CTk):
         row = DownloadRow(self.list_frame, info, thumb, self._remove_row)
         row.pack(fill="x", padx=4, pady=4)
         self.rows.append(row)
+        self._refresh_list_state()
         self.add_btn.configure(state="normal", text="목록에 추가")
         self._set_status(f"추가됨: {info.title}  (총 {len(self.rows)}개)")
         self.after(30, lambda: self._apply_responsive_layout(force=True))  # 새 행 줄바꿈 폭 반영
@@ -826,6 +850,7 @@ class App(ctk.CTk):
         self.rows.remove(row)
         if not self.rows:
             self.empty_label.pack(pady=40)
+        self._refresh_list_state()
         self._set_status(f"삭제됨  (총 {len(self.rows)}개)")
 
     def on_browse(self):

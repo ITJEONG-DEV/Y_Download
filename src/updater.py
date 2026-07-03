@@ -6,7 +6,7 @@ GitHub Releases 기반 자동 업데이트.
 흐름:
   1) check_update(현재버전)  -> 최신 릴리스가 더 높으면 정보 dict 반환
   2) download_and_apply(...)  -> 현재 빌드(full/lite)에 맞는 zip을 받아 교체 준비.
-     실행 중인 exe는 스스로 덮어쓸 수 없으므로, 도우미 배치(.bat)가 현재 프로세스
+     실행 중인 exe는 스스로 덮어쓸 수 없으므로, 도우미 PowerShell 스크립트가 현재 프로세스
      종료를 기다렸다가 파일을 교체하고 프로그램을 재시작한다.
 
 개발(비프리즈) 실행에서는 자동 적용을 하지 않는다(build_kind()=="dev").
@@ -26,10 +26,10 @@ from urllib.request import Request, urlopen
 REPO = "ITJEONG-DEV/Y_Download"
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
 
-# 숨김 콘솔로 실행(콘솔은 있으되 보이지 않음) — ping/start 등이 정상 동작하도록 DETACHED는 쓰지 않음
+# Run helper without showing a console window
 _CREATE_NO_WINDOW = 0x08000000
 
-# 도우미 배치 로그(문제 발생 시 확인용, 고정 경로)
+# Helper script log path (fixed location for diagnostics)
 _LOG_PATH = os.path.join(tempfile.gettempdir(), "Y_Downloader_update.log")
 
 
@@ -125,53 +125,97 @@ def _find(root: str, filename: str) -> Optional[str]:
     return None
 
 
+_NL = chr(13) + chr(10)
+
+
+def _ps_literal(s: str) -> str:
+    """PowerShell single-quoted string literal."""
+    return "'" + s.replace("'", "''") + "'"
+
+
+def _ps_lines(*lines: str) -> str:
+    return _NL.join(lines) + _NL
+
+
 def _wait_block(pid: int, log: str) -> str:
-    """현재 프로세스(pid) 종료를 기다리는 배치 조각. timeout 대신 ping으로 지연(콘솔 불필요)."""
-    return (
-        f'echo [update] waiting for pid {pid} >> "{log}"\r\n'
-        ":wait\r\n"
-        f'tasklist /FI "PID eq {pid}" | find "{pid}" >nul || goto proceed\r\n'
-        "ping -n 2 127.0.0.1 >nul\r\n"
-        "goto wait\r\n"
-        ":proceed\r\n"
-        "ping -n 2 127.0.0.1 >nul\r\n"
+    """Return PowerShell code that waits for the current process to exit."""
+    return _ps_lines(
+        f"$Log = {_ps_literal(log)}",
+        f"Add-Content -LiteralPath $Log -Encoding UTF8 -Value '[update] waiting for pid {pid}'",
+        f"while (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{",
+        "  Start-Sleep -Milliseconds 700",
+        "}",
+        "Start-Sleep -Seconds 1",
     )
 
 
-def _lite_bat(pid: int, cur: str, new: str, log: str) -> str:
-    # 실행 중 exe는 덮어쓰기는 불가하지만 이동(rename)은 가능 → 이동 후 새 파일 복사
-    return (
-        "@echo off\r\n"
-        f'echo [update] lite start > "{log}"\r\n'
-        + _wait_block(pid, log)
-        + f'move /y "{cur}" "{cur}.old" >> "{log}" 2>&1\r\n'
-        + f'copy /y "{new}" "{cur}" >> "{log}" 2>&1\r\n'
-        + f'if errorlevel 1 ( ping -n 3 127.0.0.1 >nul & copy /y "{new}" "{cur}" >> "{log}" 2>&1 )\r\n'
-        + f'start "" "{cur}"\r\n'
-        + f'del "{cur}.old" >nul 2>&1\r\n'
-        + f'echo [update] lite done >> "{log}"\r\n'
+def _lite_script(pid: int, cur: str, new: str, log: str) -> str:
+    # A running exe cannot be overwritten directly; rename it, then copy the new exe.
+    return _ps_lines(
+        "$ErrorActionPreference = 'Stop'",
+        f"$Log = {_ps_literal(log)}",
+        "Set-Content -LiteralPath $Log -Encoding UTF8 -Value '[update] lite start'",
+        f"$Cur = {_ps_literal(cur)}",
+        f"$New = {_ps_literal(new)}",
+    ) + _wait_block(pid, log) + _ps_lines(
+        "$Old = $Cur + '.old'",
+        "try {",
+        "  Move-Item -LiteralPath $Cur -Destination $Old -Force",
+        "  try {",
+        "    Copy-Item -LiteralPath $New -Destination $Cur -Force",
+        "  } catch {",
+        "    Start-Sleep -Seconds 2",
+        "    Copy-Item -LiteralPath $New -Destination $Cur -Force",
+        "  }",
+        "  Start-Process -FilePath $Cur -WorkingDirectory (Split-Path -LiteralPath $Cur -Parent)",
+        "  Remove-Item -LiteralPath $Old -Force -ErrorAction SilentlyContinue",
+        "  Add-Content -LiteralPath $Log -Encoding UTF8 -Value '[update] lite done'",
+        "} catch {",
+        "  Add-Content -LiteralPath $Log -Encoding UTF8 -Value ('[update] lite failed: ' + $_.Exception.Message)",
+        "  throw",
+        "}",
     )
 
 
-def _full_bat(pid: int, extract: str, app_dir: str, exe_name: str, log: str) -> str:
-    # 프로세스 완전 종료 후 폴더 덮어쓰기(잠금 해제됨). 전송 실패 시 재시도(/R /W).
-    return (
-        "@echo off\r\n"
-        f'echo [update] full start > "{log}"\r\n'
-        + _wait_block(pid, log)
-        + f'robocopy "{extract}" "{app_dir}" /E /IS /IT /R:5 /W:1 >> "{log}" 2>&1\r\n'
-        + f'start "" "{os.path.join(app_dir, exe_name)}"\r\n'
-        + f'echo [update] full done >> "{log}"\r\n'
+def _full_script(pid: int, extract: str, app_dir: str, exe_name: str, log: str) -> str:
+    # After the process exits, overwrite files in the app directory.
+    return _ps_lines(
+        "$ErrorActionPreference = 'Stop'",
+        f"$Log = {_ps_literal(log)}",
+        "Set-Content -LiteralPath $Log -Encoding UTF8 -Value '[update] full start'",
+        f"$Extract = {_ps_literal(extract)}",
+        f"$AppDir = {_ps_literal(app_dir)}",
+        f"$Exe = {_ps_literal(os.path.join(app_dir, exe_name))}",
+    ) + _wait_block(pid, log) + _ps_lines(
+        "try {",
+        "  Get-ChildItem -LiteralPath $Extract -Force | Copy-Item -Destination $AppDir -Recurse -Force",
+        "  Start-Process -FilePath $Exe -WorkingDirectory $AppDir",
+        "  Add-Content -LiteralPath $Log -Encoding UTF8 -Value '[update] full done'",
+        "} catch {",
+        "  Add-Content -LiteralPath $Log -Encoding UTF8 -Value ('[update] full failed: ' + $_.Exception.Message)",
+        "  throw",
+        "}",
     )
 
 
-def _launch_helper(bat_text: str) -> None:
-    """도우미 배치를 별도 임시폴더에 쓰고 숨김 콘솔로 실행(부모 종료와 독립)."""
+def _launch_helper(script_text: str) -> None:
+    """Write and launch the helper PowerShell script hidden."""
     helper_dir = tempfile.mkdtemp(prefix="ydl_helper_")
-    bat = os.path.join(helper_dir, "update.bat")
-    with open(bat, "w", encoding="utf-8") as f:
-        f.write(bat_text)
-    subprocess.Popen(["cmd", "/c", bat], creationflags=_CREATE_NO_WINDOW, close_fds=True)
+    ps1 = os.path.join(helper_dir, "update.ps1")
+    # UTF-8 with BOM lets Windows PowerShell 5.1 read non-ASCII paths reliably.
+    with open(ps1, "w", encoding="utf-8-sig") as f:
+        f.write(script_text)
+    subprocess.Popen(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-WindowStyle", "Hidden",
+            "-File", ps1,
+        ],
+        creationflags=_CREATE_NO_WINDOW,
+        close_fds=True,
+    )
 
 
 def download_and_apply(
@@ -180,8 +224,8 @@ def download_and_apply(
     progress: Optional[Callable[[float], None]] = None,
 ) -> None:
     """
-    최신 자산을 받아 교체 도우미 배치를 실행한다. 이 함수가 리턴한 뒤
-    호출자는 앱을 종료해야 배치가 파일 교체를 진행한다.
+    Download the latest asset and launch a helper PowerShell script.
+    The caller must exit the app after this returns so the helper can replace files.
     문제 진단 로그: %TEMP%/Y_Downloader_update.log
     """
     if kind == "dev":
@@ -206,10 +250,10 @@ def download_and_apply(
         new_exe = _find(extract, "Y_Downloader-lite.exe")
         if not new_exe:
             raise RuntimeError("압축에서 lite exe를 찾지 못했습니다.")
-        bat = _lite_bat(pid, sys.executable, new_exe, log)
+        script = _lite_script(pid, sys.executable, new_exe, log)
     else:  # full (onedir)
         app_dir = os.path.dirname(sys.executable)
         exe_name = os.path.basename(sys.executable)
-        bat = _full_bat(pid, extract, app_dir, exe_name, log)
+        script = _full_script(pid, extract, app_dir, exe_name, log)
 
-    _launch_helper(bat)
+    _launch_helper(script)

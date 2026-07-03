@@ -53,6 +53,10 @@ HEIGHT_LABELS = {
 }
 AUDIO_BITRATES = ["320", "256", "192", "128"]
 
+# 내역 사이드 패널 폭(px) 및 좌우 여백
+HISTORY_PANEL_WIDTH = 320
+HISTORY_PANEL_GAP = 16
+
 
 def _quality_label(h: int) -> str:
     return HEIGHT_LABELS.get(h, f"{h}p")
@@ -66,73 +70,102 @@ class DownloadRow(ctk.CTkFrame):
         self.info = info
         self._thumb = thumb
         self._on_remove = on_remove
+        self._last_wl = 0
 
-        self.columnconfigure(1, weight=1)
-
-        # 썸네일
+        # 썸네일 (고정)
         self.thumb_label = ctk.CTkLabel(self, text="", image=thumb, width=120, height=68)
-        self.thumb_label.grid(row=0, column=0, rowspan=3, padx=8, pady=8)
+        self.thumb_label.pack(side="left", padx=8, pady=8)
 
-        # 제목 + 길이
-        title_text = info.title
-        if len(title_text) > 55:
-            title_text = title_text[:55] + "…"
-        self.title_label = ctk.CTkLabel(
-            self, text=f"{title_text}   ({info.duration_str})",
-            anchor="w", justify="left",
-        )
-        self.title_label.grid(row=0, column=1, columnspan=5, sticky="w", padx=6, pady=(8, 2))
+        # 우측 콘텐츠 (가변 폭 — 창/목록 폭에 따라 늘고 줄어듦)
+        right = ctk.CTkFrame(self, fg_color="transparent")
+        right.pack(side="left", fill="both", expand=True, padx=(0, 6), pady=6)
 
-        # 삭제 버튼
+        # 1줄: 제목 + 삭제 버튼
+        titlebar = ctk.CTkFrame(right, fg_color="transparent")
+        titlebar.pack(fill="x")
         self.remove_btn = ctk.CTkButton(
-            self, text="✕", width=28, fg_color="transparent",
+            titlebar, text="✕", width=28, fg_color="transparent",
             text_color=("gray30", "gray70"), hover_color=("gray80", "gray30"),
             command=lambda: self._on_remove(self),
         )
-        self.remove_btn.grid(row=0, column=6, padx=(0, 6), pady=(8, 2))
+        self.remove_btn.pack(side="right")
+        self.title_label = ctk.CTkLabel(
+            titlebar, text=f"{info.title}   ({info.duration_str})",
+            anchor="w", justify="left",
+        )
+        self.title_label.pack(side="left", fill="x", expand=True)
+        # 라벨 폭에 맞춰 줄바꿈 길이 갱신 → 좁아지면 잘리지 않고 줄바꿈
+        self.title_label.bind("<Configure>", self._on_title_configure)
 
-        # 파일명 입력 + 확장자
-        ctk.CTkLabel(self, text="파일명:").grid(row=1, column=1, sticky="w", padx=6)
-        self.name_entry = ctk.CTkEntry(self, width=240)
+        # 2줄: 파일명 + 확장자
+        namebar = ctk.CTkFrame(right, fg_color="transparent")
+        namebar.pack(fill="x", pady=(4, 0))
+        ctk.CTkLabel(namebar, text="파일명:").pack(side="left")
+        self.name_entry = ctk.CTkEntry(namebar)
         self.name_entry.insert(0, sanitize_filename(info.title))
-        self.name_entry.grid(row=1, column=2, sticky="w", padx=4)
+        self.name_entry.pack(side="left", fill="x", expand=True, padx=(4, 8))
+        self.name_entry.bind("<Up>", self._cursor_home)      # 커서 맨 앞으로
+        self.name_entry.bind("<Down>", self._cursor_end)     # 커서 맨 뒤로
+        ctk.CTkLabel(namebar, text="확장자:").pack(side="left")
+        self.ext_menu = ctk.CTkOptionMenu(
+            namebar, values=VIDEO_EXTS, width=88, dynamic_resizing=False
+        )
+        self.ext_menu.pack(side="left", padx=(4, 0))
 
-        ctk.CTkLabel(self, text="확장자:").grid(row=1, column=3, sticky="e", padx=(8, 2))
-        self.ext_menu = ctk.CTkOptionMenu(self, values=VIDEO_EXTS, width=90)
-        self.ext_menu.grid(row=1, column=4, sticky="w", padx=(0, 6))
-
-        # 포맷 + 품질
-        ctk.CTkLabel(self, text="포맷:").grid(row=2, column=1, sticky="w", padx=6, pady=(0, 8))
+        # 3줄: 포맷 + 품질 + 예상크기 + 상태
+        ctrlbar = ctk.CTkFrame(right, fg_color="transparent")
+        ctrlbar.pack(fill="x", pady=(4, 2))
+        ctk.CTkLabel(ctrlbar, text="포맷:").pack(side="left")
         self.kind_menu = ctk.CTkOptionMenu(
-            self, values=["영상", "음원"], width=90, command=self._on_kind_change,
+            ctrlbar, values=["영상", "음원"], width=80, dynamic_resizing=False,
+            command=self._on_kind_change,
         )
-        self.kind_menu.grid(row=2, column=2, sticky="w", padx=4, pady=(0, 8))
-
-        ctk.CTkLabel(self, text="품질:").grid(row=2, column=3, sticky="e", padx=(8, 2), pady=(0, 8))
+        self.kind_menu.pack(side="left", padx=(4, 10))
+        ctk.CTkLabel(ctrlbar, text="품질:").pack(side="left")
         self.quality_menu = ctk.CTkOptionMenu(
-            self, values=["최고"], width=130, command=lambda _=None: self._update_estimate()
+            ctrlbar, values=["최고"], width=126, dynamic_resizing=False,
+            command=lambda _=None: self._update_estimate(),
         )
-        self.quality_menu.grid(row=2, column=4, sticky="w", padx=(0, 6), pady=(0, 8))
+        self.quality_menu.pack(side="left", padx=(4, 10))
 
-        # 예상 크기 — 고정 폭 셀(텍스트 길이가 바뀌어도 열 폭이 변하지 않게 propagate off)
-        size_cell = ctk.CTkFrame(self, width=120, height=24, fg_color="transparent")
-        size_cell.grid(row=2, column=5, sticky="w", padx=6, pady=(0, 8))
-        size_cell.grid_propagate(False)
-        self.size_label = ctk.CTkLabel(
-            size_cell, text="예상: -", anchor="w", text_color=("gray40", "gray60")
-        )
-        self.size_label.pack(side="left", fill="x")
-
-        # 상태 표시(항목별) — 고정 폭 셀
-        status_cell = ctk.CTkFrame(self, width=90, height=24, fg_color="transparent")
-        status_cell.grid(row=2, column=6, sticky="w", padx=6, pady=(0, 8))
-        status_cell.grid_propagate(False)
+        # 상태 — 고정 폭 셀(텍스트가 바뀌어도 폭 고정), 우측 정렬
+        status_cell = ctk.CTkFrame(ctrlbar, width=88, height=24, fg_color="transparent")
+        status_cell.pack(side="right")
+        status_cell.pack_propagate(False)
         self.status_label = ctk.CTkLabel(
             status_cell, text="대기", anchor="w", text_color=("gray40", "gray60")
         )
         self.status_label.pack(side="left", fill="x")
 
+        # 예상 크기 — 고정 폭 셀
+        size_cell = ctk.CTkFrame(ctrlbar, width=124, height=24, fg_color="transparent")
+        size_cell.pack(side="right", padx=(0, 6))
+        size_cell.pack_propagate(False)
+        self.size_label = ctk.CTkLabel(
+            size_cell, text="예상: -", anchor="w", text_color=("gray40", "gray60")
+        )
+        self.size_label.pack(side="left", fill="x")
+
         self._apply_video_options()
+
+    # 파일명 입력창 커서 이동 편의 (Up=맨앞, Down=맨뒤)
+    def _cursor_home(self, _event=None):
+        entry = self.name_entry._entry  # 내부 tkinter.Entry
+        entry.icursor(0)
+        entry.xview_moveto(0)
+        return "break"
+
+    def _cursor_end(self, _event=None):
+        entry = self.name_entry._entry
+        entry.icursor("end")
+        entry.xview_moveto(1)
+        return "break"
+
+    def _on_title_configure(self, event):
+        wl = max(120, event.width - 8)
+        if self._last_wl != wl:
+            self._last_wl = wl
+            self.title_label.configure(wraplength=wl)
 
     # 포맷 전환 시 확장자/품질 옵션 갱신
     def _on_kind_change(self, _value=None):
@@ -204,7 +237,7 @@ class DownloadRow(ctk.CTkFrame):
 class HistoryPanel(ctk.CTkFrame):
     """다운로드 내역(성공/실패) 우측 사이드 패널. 더블클릭 재추가 / 단일·전체 삭제."""
 
-    def __init__(self, master, app: "App", width: int = 320):
+    def __init__(self, master, app: "App", width: int = HISTORY_PANEL_WIDTH):
         super().__init__(master, width=width)
         self.app = app
         self.pack_propagate(False)  # 고정 폭 유지
@@ -253,12 +286,13 @@ class HistoryPanel(ctk.CTkFrame):
 
     def _make_row(self, entry: dict):
         ok = entry.get("status") == "성공"
+        color = ("green", "#4caf50") if ok else ("red", "#e57373")
         row = ctk.CTkFrame(self.list_frame, fg_color=("gray92", "gray18"))
         row.pack(fill="x", padx=2, pady=3)
 
-        # 단일 삭제 버튼 (우측)
+        # 단일 삭제 (휴지통) 버튼 — 우측
         ctk.CTkButton(
-            row, text="✕", width=24, fg_color="transparent",
+            row, text="🗑", width=28, fg_color="transparent",
             text_color=("gray40", "gray60"), hover_color=("gray80", "gray30"),
             command=lambda i=entry.get("id"): self._delete(i),
         ).pack(side="right", padx=(0, 4), pady=4)
@@ -266,16 +300,19 @@ class HistoryPanel(ctk.CTkFrame):
         text_area = ctk.CTkFrame(row, fg_color="transparent")
         text_area.pack(side="left", fill="x", expand=True, padx=(6, 0), pady=4)
 
-        icon = "✅" if ok else "❌"
-        color = ("green", "#4caf50") if ok else ("red", "#e57373")
+        # 1줄: 파일명 (영상명) 성공여부
+        status_txt = "성공" if ok else "실패"
+        filename = entry.get("filename") or "(제목)"
+        title = entry.get("title", "")
         line1 = ctk.CTkLabel(
-            text_area, text=f"{icon}  {entry.get('title', '(제목 없음)')}",
-            anchor="w", justify="left", text_color=color, wraplength=210,
+            text_area, text=f"{filename}  ({title})  · {status_txt}",
+            anchor="w", justify="left", text_color=color, wraplength=200,
         )
         line1.pack(fill="x")
 
+        # 2줄: 일시 포맷/확장자 품질
         detail = (
-            f"{entry.get('timestamp', '')} · "
+            f"{entry.get('timestamp', '')}  "
             f"{entry.get('kind', '')}/{entry.get('ext', '')} "
             f"{entry.get('quality', '')}"
         )
@@ -284,7 +321,7 @@ class HistoryPanel(ctk.CTkFrame):
             detail += f"\n{msg}"
         line2 = ctk.CTkLabel(
             text_area, text=detail, anchor="w", justify="left",
-            text_color=("gray40", "gray60"), wraplength=210,
+            text_color=("gray40", "gray60"), wraplength=200,
         )
         line2.pack(fill="x")
 
@@ -453,10 +490,35 @@ class App(ctk.CTk):
         if self._history_visible:
             self.history_panel.pack_forget()
             self._history_visible = False
+            self._resize_for_panel(opening=False)
         else:
             self.history_panel.render()
             self.history_panel.pack(side="right", fill="y", padx=(0, 8), pady=8)
             self._history_visible = True
+            self._resize_for_panel(opening=True)
+
+    def _resize_for_panel(self, opening: bool):
+        """
+        일반(창모드)에서는 패널이 열리는 만큼 창 폭을 넓히고(닫으면 줄임),
+        화면 폭을 넘지 않게 제한한다. 최대화(zoomed) 상태면 창 크기를 바꾸지 않아
+        목록이 패널과 공간을 나눠 갖는다.
+        """
+        if self.state() == "zoomed":
+            return
+        self.update_idletasks()
+        delta = HISTORY_PANEL_WIDTH + HISTORY_PANEL_GAP
+        w, h = self.winfo_width(), self.winfo_height()
+        x, y = self.winfo_x(), self.winfo_y()
+        screen_w = self.winfo_screenwidth()
+        min_w = self.minsize()[0]
+
+        if opening:
+            new_w = min(w + delta, screen_w)
+            if x + new_w > screen_w:            # 화면 밖으로 나가면 왼쪽으로 당김
+                x = max(0, screen_w - new_w)
+        else:
+            new_w = max(min_w, w - delta)
+        self.geometry(f"{new_w}x{h}+{x}+{y}")
 
     def on_download_all(self):
         if self._downloading:

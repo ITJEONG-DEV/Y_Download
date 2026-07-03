@@ -367,7 +367,7 @@ class HistoryPanel(ctk.CTkFrame):
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title(f"Y_Downloader v{__version__}")
+        self.title(f"Y_Downloader-{__version__}")
         self.geometry("880x660")
         self.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
 

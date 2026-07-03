@@ -121,6 +121,24 @@ def _clamp_text(text: str, font, width: int, max_lines: int = 2) -> str:
     return "\n".join(lines)
 
 
+def _wrap_around(text: str, font, first_width: int, full_width: int) -> str:
+    """첫 줄은 first_width(버튼 자리 피함), 이후 줄은 full_width로 줄바꿈(float 흉내)."""
+    text = (text or "").replace("\n", " ")
+    lines: list[str] = []
+    cur = ""
+    width = first_width
+    for ch in text:
+        if cur and font.measure(cur + ch) > width:
+            lines.append(cur)
+            cur = ch
+            width = full_width  # 둘째 줄부터 전체 폭
+        else:
+            cur += ch
+    if cur:
+        lines.append(cur)
+    return "\n".join(lines)
+
+
 class DownloadRow(ctk.CTkFrame):
     """목록의 한 항목. 자체 위젯과 상태(VideoInfo)를 가진다."""
 
@@ -382,40 +400,40 @@ class HistoryPanel(ctk.CTkFrame):
         )
         msg = entry.get("message")
 
-        title_w = self._clamp_w - 72  # 우측 버튼 공간만큼 제목 폭을 좁힘
+        content_w = self._clamp_w + 20   # 제목 전체 폭
+        first_w = content_w - 84         # 첫 줄은 우측 버튼 자리를 피함
+        arrow = "▾ " if expanded else "▸ "
+        full_primary = arrow + primary
         if expanded:
-            primary_text = primary                        # 전체 표시(자동 줄바꿈)
+            primary_text = _wrap_around(full_primary, self.item_font, first_w, content_w - 4)
             detail_text = detail + (f"\n{msg}" if msg else "")
-            arrow = "▾ "
         else:
-            primary_text = _clamp_text(primary, self.item_font, title_w, 1)   # 1줄
-            detail_text = _clamp_text(detail, self.item_font, self._clamp_w, 1)
-            arrow = "▸ "
+            primary_text = _clamp_text(full_primary, self.item_font, first_w, 1)  # 1줄
+            detail_text = _clamp_text(detail, self.item_font, content_w, 1)
 
         click_targets = [row]
 
-        # 상단: 제목(좌) + 추가/삭제 버튼(우) — 접힘·펼침 모두 노출
-        top = ctk.CTkFrame(row, fg_color="transparent")
-        top.pack(fill="x", padx=8, pady=(6, 2))
-        click_targets.append(top)
+        # 제목: 전체 폭 라벨(직접 줄바꿈), 첫 줄만 버튼 자리를 피해 흘러넘침
+        p = ctk.CTkLabel(
+            row, text=primary_text, anchor="w", justify="left",
+            text_color=color, wraplength=content_w + 30, font=self.item_font,
+        )
+        p.pack(fill="x", padx=8, pady=(6, 2))
+        click_targets.append(p)
 
+        # 추가/삭제 버튼: 우측 상단에 오버레이(place) — 접힘·펼침 모두 노출
+        btns = ctk.CTkFrame(row, fg_color="transparent")
+        btns.place(relx=1.0, rely=0.0, x=-6, y=6, anchor="ne")
         ctk.CTkButton(
-            top, text="🗑", width=30, height=24,
-            fg_color="#c0392b", hover_color="#a93226", text_color="white",
-            command=lambda i=eid: self._delete(i),
-        ).pack(side="right", padx=(3, 0))  # 내역에서 삭제
-        ctk.CTkButton(
-            top, text="＋", width=30, height=24,
+            btns, text="＋", width=30, height=24,
             font=ctk.CTkFont(size=15, weight="bold"),
             command=lambda u=entry.get("url"): self._readd(u),
-        ).pack(side="right", padx=(3, 0))  # 목록에 추가(강조색)
-
-        p = ctk.CTkLabel(
-            top, text=arrow + primary_text, anchor="w", justify="left",
-            text_color=color, wraplength=title_w + 6, font=self.item_font,
-        )
-        p.pack(side="left", fill="x", expand=True)
-        click_targets.append(p)
+        ).pack(side="left", padx=(0, 3))  # 목록에 추가(강조색)
+        ctk.CTkButton(
+            btns, text="🗑", width=30, height=24,
+            fg_color="#c0392b", hover_color="#a93226", text_color="white",
+            command=lambda i=eid: self._delete(i),
+        ).pack(side="left")  # 내역에서 삭제
 
         # 썸네일 (펼침 + 있을 때) — 제목 아래
         if expanded:
@@ -429,7 +447,7 @@ class HistoryPanel(ctk.CTkFrame):
         # 날짜/포맷 등
         d = ctk.CTkLabel(
             row, text=detail_text, anchor="w", justify="left",
-            text_color=("gray40", "gray60"), wraplength=self._clamp_w + 20,
+            text_color=("gray40", "gray60"), wraplength=content_w + 30,
         )
         d.pack(fill="x", padx=8, pady=(0, 6))
         click_targets.append(d)

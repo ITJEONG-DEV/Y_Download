@@ -409,6 +409,7 @@ class App(ctk.CTk):
         # 리사이즈는 디바운스로 한 번만 반영(이벤트 폭주로 인한 지연 방지)
         self._resize_after = None
         self._last_list_w = 0  # 마지막으로 반영한 목록 폭(변화 없으면 재배치 생략)
+        self._left_frozen = False
         self.bind("<Configure>", self._on_window_configure)
         # 닫을 때 창 상태 저장
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -747,13 +748,19 @@ class App(ctk.CTk):
         """
         if self._history_visible:
             self.history_panel.pack_forget()
-            self._grow_window(-1)
-            self._unfreeze_left()
+            if self._left_frozen:
+                # 창을 좁힌 뒤, 실제로 좁아진 것을 확인하고 unfreeze(그전에 풀면 왼쪽이
+                # 넓게 늘었다 줄며 깜빡이므로 폭이 목표에 도달할 때까지 기다린다)
+                target_w = self._grow_window(-1)
+                self._schedule_unfreeze(target_w, 40)
+            else:
+                self._grow_window(-1)
             self._history_visible = False
         else:
             self.history_panel.render_if_dirty()
-            self._freeze_left()
-            self._grow_window(+1)
+            if self.state() != "zoomed":  # 최대화면 창을 못 넓히므로 freeze하지 않음
+                self._freeze_left()
+                self._grow_window(+1)
             self.history_panel.pack(side="right", fill="y", padx=(0, 8), pady=8)
             self._history_visible = True
 
@@ -763,11 +770,21 @@ class App(ctk.CTk):
         self.left.configure(width=self.left.winfo_width(), height=self.left.winfo_height())
         self.left.pack_propagate(False)
         self.left.pack_configure(expand=False, fill="y")
+        self._left_frozen = True
 
     def _unfreeze_left(self):
         """왼쪽 콘텐츠 고정 해제(창 크기에 다시 맞춰 늘고 줄어들게)."""
+        if not self._left_frozen:
+            return
         self.left.pack_propagate(True)
         self.left.pack_configure(expand=True, fill="both")
+        self._left_frozen = False
+
+    def _schedule_unfreeze(self, target_w: int, attempts: int):
+        if attempts <= 0 or self.winfo_width() <= target_w + 4:
+            self._unfreeze_left()
+        else:
+            self.after(15, lambda: self._schedule_unfreeze(target_w, attempts - 1))
 
     def _grow_window(self, sign: int):
         """
@@ -778,7 +795,7 @@ class App(ctk.CTk):
         창이 주모니터로 튀는 문제 방지.
         """
         if self.state() == "zoomed":
-            return
+            return self.winfo_width()
         delta = (HISTORY_PANEL_WIDTH + HISTORY_PANEL_GAP) * sign
         w, h = self.winfo_width(), self.winfo_height()
         x, y = self.winfo_x(), self.winfo_y()
@@ -795,6 +812,7 @@ class App(ctk.CTk):
         else:
             new_w = max(MIN_WINDOW_WIDTH, w + delta)
         self.geometry(f"{new_w}x{h}+{x}+{y}")
+        return new_w
 
     def on_download_all(self):
         if self._downloading:

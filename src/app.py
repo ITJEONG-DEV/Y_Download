@@ -622,35 +622,35 @@ class App(ctk.CTk):
     def toggle_history(self):
         """우측 내역 패널을 열고 닫는다."""
         if self._history_visible:
+            # 닫기: 패널 제거 → 창 축소 (사이에 강제 갱신 없이 한 번의 레이아웃으로)
             self.history_panel.pack_forget()
+            self._grow_window(-1)
             self._history_visible = False
-            self._resize_for_panel(opening=False)
         else:
+            # 열기: 창을 먼저 넓히고 → 패널 끼움. 좌측 폭이 유지되어 목록 재배치가 없다.
             self.history_panel.render_if_dirty()
+            self._grow_window(+1)
             self.history_panel.pack(side="right", fill="y", padx=(0, 8), pady=8)
             self._history_visible = True
-            self._resize_for_panel(opening=True)
 
-    def _resize_for_panel(self, opening: bool):
+    def _grow_window(self, sign: int):
         """
-        일반(창모드)에서는 패널이 열리는 만큼 창 폭을 넓히고(닫으면 줄임),
-        화면 폭을 넘지 않게 제한한다. 최대화(zoomed) 상태면 창 크기를 바꾸지 않아
-        목록이 패널과 공간을 나눠 갖는다.
+        내역 패널 폭만큼 창 폭을 넓히거나(+1) 줄인다(-1).
+        최대화(zoomed) 상태면 창을 바꾸지 않아 목록이 패널과 공간을 나눈다.
+        update_idletasks를 호출하지 않아, geometry 변경과 pack이 한 번의 레이아웃으로 합쳐진다.
         """
         if self.state() == "zoomed":
             return
-        self.update_idletasks()
-        delta = HISTORY_PANEL_WIDTH + HISTORY_PANEL_GAP
+        delta = (HISTORY_PANEL_WIDTH + HISTORY_PANEL_GAP) * sign
         w, h = self.winfo_width(), self.winfo_height()
         x, y = self.winfo_x(), self.winfo_y()
         screen_w = self.winfo_screenwidth()
-
-        if opening:
+        if sign > 0:
             new_w = min(w + delta, screen_w)
             if x + new_w > screen_w:            # 화면 밖으로 나가면 왼쪽으로 당김
                 x = max(0, screen_w - new_w)
         else:
-            new_w = max(MIN_WINDOW_WIDTH, w - delta)
+            new_w = max(MIN_WINDOW_WIDTH, w + delta)
         self.geometry(f"{new_w}x{h}+{x}+{y}")
 
     def on_download_all(self):

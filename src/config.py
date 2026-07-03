@@ -16,6 +16,7 @@ _APP_DIR = os.path.join(
 )
 _SETTINGS_PATH = os.path.join(_APP_DIR, "settings.json")
 _HISTORY_PATH = os.path.join(_APP_DIR, "history.json")
+_THUMBS_DIR = os.path.join(_APP_DIR, "thumbs")
 
 # 내역 최대 보관 개수 (오래된 것부터 버림)
 _HISTORY_LIMIT = 200
@@ -23,6 +24,24 @@ _HISTORY_LIMIT = 200
 
 def _ensure_dir() -> None:
     os.makedirs(_APP_DIR, exist_ok=True)
+
+
+def thumbs_dir() -> str:
+    """내역 썸네일 저장 폴더(없으면 생성)."""
+    try:
+        os.makedirs(_THUMBS_DIR, exist_ok=True)
+    except OSError:
+        pass
+    return _THUMBS_DIR
+
+
+def _remove_thumb(entry: dict) -> None:
+    path = entry.get("thumb")
+    if path:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 # --------------------------------------------------------------- 설정
@@ -104,19 +123,28 @@ def add_history(entry: dict) -> None:
     entry.setdefault("id", uuid.uuid4().hex)
     history = load_history()
     history.insert(0, entry)
+    for old in history[_HISTORY_LIMIT:]:  # 한도 초과로 버려지는 항목의 썸네일 정리
+        _remove_thumb(old)
     del history[_HISTORY_LIMIT:]
     _save_history(history)
 
 
 def delete_history(entry_id: str) -> None:
-    """id가 일치하는 내역 1건을 삭제한다."""
+    """id가 일치하는 내역 1건을 삭제한다(썸네일 파일도 제거)."""
     if not entry_id:
         return
-    history = [e for e in load_history() if e.get("id") != entry_id]
-    _save_history(history)
+    kept = []
+    for e in load_history():
+        if e.get("id") == entry_id:
+            _remove_thumb(e)
+        else:
+            kept.append(e)
+    _save_history(kept)
 
 
 def clear_history() -> None:
+    for e in load_history():
+        _remove_thumb(e)
     try:
         _ensure_dir()
         with open(_HISTORY_PATH, "w", encoding="utf-8") as fp:

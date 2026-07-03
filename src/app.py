@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import os
 import threading
+import uuid
 from datetime import datetime
 from tkinter import filedialog
 
@@ -302,8 +303,9 @@ class HistoryPanel(ctk.CTkFrame):
         self.app = app
         self.pack_propagate(False)  # 고정 폭 유지
         self._expanded: set[str] = set()      # 펼쳐진 항목 id
-        self.item_font = ctk.CTkFont(size=12)  # 2줄 말줄임 계산용
+        self.item_font = ctk.CTkFont(size=12)  # 말줄임 계산용
         self._clamp_w = 240                    # 접힘 상태 텍스트 폭(px)
+        self._img_refs: list = []              # 썸네일 CTkImage 참조 유지(GC 방지)
 
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=8, pady=(8, 2))
@@ -343,6 +345,7 @@ class HistoryPanel(ctk.CTkFrame):
 
     def render(self):
         self._dirty = False
+        self._img_refs.clear()
         for child in self.list_frame.winfo_children():
             child.destroy()
 
@@ -366,28 +369,41 @@ class HistoryPanel(ctk.CTkFrame):
         row = ctk.CTkFrame(self.list_frame, fg_color=("gray92", "gray18"))
         row.pack(fill="x", padx=2, pady=3)
 
-        text_area = ctk.CTkFrame(row, fg_color="transparent")
-        text_area.pack(fill="x", padx=8, pady=(6, 4))
-
         status_txt = "성공" if ok else "실패"
         filename = entry.get("filename") or ""
         title = entry.get("title", "(제목 없음)")
-        # 영상이름 (다운로드명)
-        primary = title + (f" ({filename})" if filename and filename != "(제목)" else "")
+        # [성공/실패] 영상명 (파일명)
+        primary = f"[{status_txt}] {title}" + (
+            f" ({filename})" if filename and filename != "(제목)" else ""
+        )
         detail = (
             f"{entry.get('timestamp', '')}  "
-            f"{entry.get('kind', '')}/{entry.get('ext', '')} "
-            f"{entry.get('quality', '')}  · {status_txt}"
+            f"{entry.get('kind', '')}/{entry.get('ext', '')} {entry.get('quality', '')}"
         )
         msg = entry.get("message")
 
+        click_targets = [row]
+
+        # 펼침: 썸네일(있으면) 먼저
         if expanded:
-            primary_text = primary                       # 전체 표시(자동 줄바꿈)
+            img = self._load_thumb_image(entry.get("thumb"))
+            if img is not None:
+                self._img_refs.append(img)
+                thumb_lbl = ctk.CTkLabel(row, text="", image=img)
+                thumb_lbl.pack(padx=8, pady=(8, 2))
+                click_targets.append(thumb_lbl)
+
+        text_area = ctk.CTkFrame(row, fg_color="transparent")
+        text_area.pack(fill="x", padx=8, pady=(6, 4))
+        click_targets.append(text_area)
+
+        if expanded:
+            primary_text = primary                        # 전체 표시(자동 줄바꿈)
             detail_text = detail + (f"\n{msg}" if msg else "")
             arrow = "▾ "
         else:
-            primary_text = _clamp_text(primary, self.item_font, self._clamp_w, 2)
-            detail_text = detail
+            primary_text = _clamp_text(primary, self.item_font, self._clamp_w, 1)  # 1줄
+            detail_text = _clamp_text(detail, self.item_font, self._clamp_w, 1)
             arrow = "▸ "
 
         p = ctk.CTkLabel(
@@ -400,23 +416,34 @@ class HistoryPanel(ctk.CTkFrame):
             text_color=("gray40", "gray60"), wraplength=self._clamp_w + 20,
         )
         d.pack(fill="x")
+        click_targets += [p, d]
 
         # 클릭 → 펼침/접힘 토글 (버튼 제외)
-        for w in (row, text_area, p, d):
+        for w in click_targets:
             w.bind("<Button-1>", lambda e, i=eid: self._toggle_expand(i))
 
         if expanded:
             btnbar = ctk.CTkFrame(row, fg_color="transparent")
             btnbar.pack(fill="x", padx=8, pady=(0, 8))
             ctk.CTkButton(
-                btnbar, text="목록에 추가", width=96, height=26,
+                btnbar, text="목록에 추가", width=100, height=26,
                 command=lambda u=entry.get("url"): self._readd(u),
             ).pack(side="left")
             ctk.CTkButton(
-                btnbar, text="내역에서 삭제", width=104, height=26,
-                fg_color="gray", hover_color="gray30",
+                btnbar, text="🗑", width=32, height=26,
+                fg_color="transparent", text_color=("gray40", "gray60"),
+                hover_color=("gray80", "gray30"),
                 command=lambda i=eid: self._delete(i),
             ).pack(side="right")
+
+    def _load_thumb_image(self, path):
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            img = Image.open(path)
+            return ctk.CTkImage(light_image=img, dark_image=img, size=(240, 135))
+        except Exception:
+            return None
 
     def _toggle_expand(self, eid):
         if not eid:
@@ -894,6 +921,7 @@ class App(ctk.CTk):
                 "params": {**row.get_params(), "on_conflict": policy},
                 "title": row.info.title,
                 "quality": row.quality_text(),
+                "thumb_url": row.info.thumbnail_url,
             }
             for row in self.rows
         ]
@@ -935,7 +963,10 @@ class App(ctk.CTk):
         self.after(0, lambda: self._on_all_done(success, total))
 
     def _record_history(self, job, params, status, message):
+        eid = uuid.uuid4().hex
+        thumb = self._save_thumb(eid, job.get("thumb_url"))
         entry = {
+            "id": eid,
             "url": params["url"],
             "title": job["title"],
             "filename": params["filename"] or "(제목)",
@@ -945,8 +976,22 @@ class App(ctk.CTk):
             "status": status,
             "message": message[:120],
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "thumb": thumb,
         }
         config.add_history(entry)
+
+    def _save_thumb(self, eid: str, url: str | None) -> str | None:
+        """썸네일을 내려받아 thumbs/{eid}.jpg로 저장하고 경로를 반환(실패 시 None)."""
+        if not url:
+            return None
+        try:
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            path = os.path.join(config.thumbs_dir(), f"{eid}.jpg")
+            Image.open(io.BytesIO(resp.content)).convert("RGB").save(path, "JPEG", quality=85)
+            return path
+        except Exception:
+            return None
 
     def _item_progress(self, d: dict, row: DownloadRow, idx: int, total: int):
         if d.get("status") == "downloading":

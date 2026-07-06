@@ -67,6 +67,7 @@ HEIGHT_LABELS = {
     144: "144p",
 }
 AUDIO_BITRATES = ["320", "256", "192", "128"]
+INFO_FETCH_TIMEOUT_SEC = 5
 
 # 내역 사이드 패널 폭(px) 및 좌우 여백
 HISTORY_PANEL_WIDTH = 320
@@ -159,16 +160,26 @@ def _wrap_around(text: str, charw, first_width: int, full_width: int, narrow_lin
 class DownloadRow(ctk.CTkFrame):
     """목록의 한 항목. 자체 위젯과 상태(VideoInfo)를 가진다."""
 
-    def __init__(self, master, info: VideoInfo, thumb, on_remove):
+    def __init__(self, master, info: VideoInfo, thumb, on_remove, defaults=None, on_defaults_change=None):
         super().__init__(master, fg_color=("gray90", "gray20"))
         self.info = info
         self._thumb = thumb
         self._on_remove = on_remove
+        self._defaults = defaults or {}
+        self._on_defaults_change = on_defaults_change
+        self._initializing = True
         self._last_wl = 0
+
+        self.index_label = ctk.CTkLabel(
+            self, text="", width=34, anchor="center",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=("gray35", "gray65"),
+        )
+        self.index_label.pack(side="left", fill="y", padx=(8, 0), pady=8)
 
         # 썸네일 (고정)
         self.thumb_label = ctk.CTkLabel(self, text="", image=thumb, width=120, height=68)
-        self.thumb_label.pack(side="left", padx=8, pady=8)
+        self.thumb_label.pack(side="left", padx=(6, 8), pady=8)
 
         # 우측 콘텐츠 (가변 폭 — 창/목록 폭에 따라 늘고 줄어듦)
         right = ctk.CTkFrame(self, fg_color="transparent")
@@ -203,7 +214,8 @@ class DownloadRow(ctk.CTkFrame):
         self.name_entry.bind("<Down>", self._cursor_end)     # 커서 맨 뒤로
         ctk.CTkLabel(namebar, text="확장자:").pack(side="left")
         self.ext_menu = ctk.CTkOptionMenu(
-            namebar, values=VIDEO_EXTS, width=88, dynamic_resizing=False
+            namebar, values=VIDEO_EXTS, width=88, dynamic_resizing=False,
+            command=lambda _=None: self._on_option_change(),
         )
         self.ext_menu.pack(side="left", padx=(4, 0))
 
@@ -219,7 +231,7 @@ class DownloadRow(ctk.CTkFrame):
         ctk.CTkLabel(ctrlbar, text="품질:").pack(side="left")
         self.quality_menu = ctk.CTkOptionMenu(
             ctrlbar, values=["최고"], width=126, dynamic_resizing=False,
-            command=lambda _=None: self._update_estimate(),
+            command=lambda _=None: self._on_option_change(),
         )
         self.quality_menu.pack(side="left", padx=(4, 10))
 
@@ -241,7 +253,11 @@ class DownloadRow(ctk.CTkFrame):
         )
         self.size_label.pack(side="left", fill="x")
 
-        self._apply_video_options()
+        self._apply_defaults()
+        self._initializing = False
+
+    def set_index(self, index: int):
+        self.index_label.configure(text=str(index))
 
     # 파일명 입력창 커서 이동 편의 (Up=맨앞, Down=맨뒤)
     def _cursor_home(self, _event=None):
@@ -265,10 +281,50 @@ class DownloadRow(ctk.CTkFrame):
 
     # 포맷 전환 시 확장자/품질 옵션 갱신
     def _on_kind_change(self, _value=None):
-        if self.kind_menu.get() == "음원":
+        if self.kind_menu.get() == "\uC74C\uC6D0":
             self._apply_audio_options()
         else:
             self._apply_video_options()
+        self._notify_defaults_changed()
+
+    def _on_option_change(self):
+        self._update_estimate()
+        self._notify_defaults_changed()
+
+    def _notify_defaults_changed(self):
+        if self._initializing or self._on_defaults_change is None:
+            return
+        self._on_defaults_change(self.get_defaults())
+
+    def get_defaults(self) -> dict:
+        p = self.get_params()
+        return {
+            "kind": p["kind"],
+            "ext": p["ext"],
+            "quality": self.quality_menu.get(),
+        }
+
+    def _quality_values(self) -> list[str]:
+        return list(self.quality_menu.cget("values") or [])
+
+    def _apply_defaults(self):
+        kind = self._defaults.get("kind")
+        if kind == "audio":
+            self.kind_menu.set("\uC74C\uC6D0")
+            self._apply_audio_options()
+        else:
+            self.kind_menu.set("\uC601\uC0C1")
+            self._apply_video_options()
+
+        ext = self._defaults.get("ext")
+        ext_values = AUDIO_EXTS if self.kind_menu.get() == "\uC74C\uC6D0" else VIDEO_EXTS
+        if ext in ext_values:
+            self.ext_menu.set(ext)
+
+        quality = self._defaults.get("quality")
+        if quality in self._quality_values():
+            self.quality_menu.set(quality)
+        self._update_estimate()
 
     def _apply_video_options(self):
         self.ext_menu.configure(values=VIDEO_EXTS)
@@ -670,6 +726,9 @@ class App(ctk.CTk):
         self._normal_geom = None  # 패널 닫힘·비최대화 상태의 기본 창 위치/크기
         default_dir = os.path.join(os.path.expanduser("~"), "Downloads")
         self.download_dir = config.get_download_dir(default_dir)
+        self.item_defaults = config.get_item_defaults()
+        self._add_request_id = 0
+        self._add_pending = False
 
         self._build_ui()
 
@@ -769,12 +828,32 @@ class App(ctk.CTk):
         if not force and w == self._last_list_w:
             return
         self._last_list_w = w
-        # 목록 폭 기준으로 제목 줄바꿈 폭 계산(썸네일·버튼·스크롤바·여백 감안)
-        wl = max(120, w - 190)
+        # Reserve space for row number, thumbnail, remove button, scrollbar, and padding.
+        wl = max(120, w - 230)
         for row in self.rows:
             row.set_title_wraplength(wl)
 
+    def _update_list_header(self):
+        count = len(self.rows)
+        title = "\ub2e4\uc6b4\ub85c\ub4dc \ubaa9\ub85d" if count == 0 else f"\ub2e4\uc6b4\ub85c\ub4dc \ubaa9\ub85d ({count}\uac1c)"
+        self.list_title_label.configure(text=title)
+        if hasattr(self, "clear_list_btn"):
+            state = "disabled" if self._downloading or count == 0 else "normal"
+            self.clear_list_btn.configure(state=state)
+
+    def _renumber_rows(self):
+        for index, row in enumerate(self.rows, start=1):
+            row.set_index(index)
+
+    def _refresh_list_state(self):
+        self._update_list_header()
+        self._renumber_rows()
+
     # ------------------------------------------------- 자동 업데이트
+    def _on_row_defaults_change(self, defaults: dict):
+        self.item_defaults = defaults
+        config.set_item_defaults(defaults)
+
     def _start_update_check(self):
         threading.Thread(target=self._update_check_worker, daemon=True).start()
 
@@ -881,8 +960,21 @@ class App(ctk.CTk):
         self.history_btn.grid(row=0, column=2, padx=(4, 8), pady=8)
 
         # --- 목록 (스크롤 영역) ---
-        self.list_frame = ctk.CTkScrollableFrame(left, label_text="다운로드 목록")
-        self.list_frame.pack(fill="both", expand=True, padx=16, pady=8)
+        list_header = ctk.CTkFrame(left, fg_color="transparent")
+        list_header.pack(fill="x", padx=16, pady=(8, 0))
+        self.list_title_label = ctk.CTkLabel(
+            list_header, text="\ub2e4\uc6b4\ub85c\ub4dc \ubaa9\ub85d",
+            font=ctk.CTkFont(size=13, weight="bold"), anchor="w",
+        )
+        self.list_title_label.pack(side="left")
+        self.clear_list_btn = ctk.CTkButton(
+            list_header, text="\ubaa8\ub450 \uc9c0\uc6b0\uae30", width=92, height=28,
+            command=self.clear_download_list, state="disabled",
+        )
+        self.clear_list_btn.pack(side="right")
+
+        self.list_frame = ctk.CTkScrollableFrame(left, label_text="")
+        self.list_frame.pack(fill="both", expand=True, padx=16, pady=(4, 8))
 
         self.empty_label = ctk.CTkLabel(
             self.list_frame, text="목록이 비어 있습니다. URL을 추가하세요.",
@@ -947,32 +1039,70 @@ class App(ctk.CTk):
         self.add_url(url)
 
     def add_url(self, url: str):
-        """URL을 조회해 목록에 추가 (on_add 및 내역 재추가에서 공용)."""
-        self.add_btn.configure(state="disabled", text="조회 중...")
-        self._set_status(f"영상 정보를 조회하는 중... {url}")
-        threading.Thread(target=self._add_worker, args=(url,), daemon=True).start()
+        """Add a URL by fetching metadata in the background."""
+        self._add_request_id += 1
+        request_id = self._add_request_id
+        self._add_pending = True
+        self.add_btn.configure(state="disabled", text="\uc870\ud68c \uc911...")
+        self._set_status(f"\uc601\uc0c1 \uc815\ubcf4\ub97c \uc870\ud68c\ud558\ub294 \uc911... {url}")
+        self.after(INFO_FETCH_TIMEOUT_SEC * 1000, lambda rid=request_id: self._on_add_timeout(rid))
+        threading.Thread(target=self._add_worker, args=(url, request_id), daemon=True).start()
 
-    def _add_worker(self, url: str):
+    def _add_worker(self, url: str, request_id: int):
         try:
-            info = fetch_info(url)
+            info = fetch_info(url, timeout=INFO_FETCH_TIMEOUT_SEC)
             thumb = self._load_thumbnail(info.thumbnail_url)
-            self.after(0, lambda: self._on_add_done(info, thumb))
+            self.after(0, lambda: self._on_add_done(info, thumb, request_id))
         except Exception as e:
-            self.after(0, lambda e=e: self._on_add_error(e))
+            self.after(0, lambda e=e: self._on_add_error(e, request_id))
 
-    def _on_add_done(self, info: VideoInfo, thumb):
+    def _is_current_add_request(self, request_id: int) -> bool:
+        return self._add_pending and request_id == self._add_request_id
+
+    def _finish_add_request(self):
+        self._add_pending = False
+        self.add_btn.configure(state="normal", text="\ubaa9\ub85d\uc5d0 \ucd94\uac00")
+
+    def _on_add_timeout(self, request_id: int):
+        if not self._is_current_add_request(request_id):
+            return
+        self._finish_add_request()
+        self._set_status(f"\uc870\ud68c \uc2dc\uac04 \ucd08\uacfc: {INFO_FETCH_TIMEOUT_SEC}\ucd08 \uc548\uc5d0 \uc751\ub2f5\ud558\uc9c0 \uc54a\uc558\uc2b5\ub2c8\ub2e4.")
+
+    def _on_add_done(self, info: VideoInfo, thumb, request_id: int):
+        if not self._is_current_add_request(request_id):
+            return
+        self._finish_add_request()
         if self.empty_label.winfo_exists():
             self.empty_label.pack_forget()
-        row = DownloadRow(self.list_frame, info, thumb, self._remove_row)
+        row = DownloadRow(
+            self.list_frame, info, thumb, self._remove_row,
+            defaults=self.item_defaults,
+            on_defaults_change=self._on_row_defaults_change,
+        )
         row.pack(fill="x", padx=4, pady=4)
         self.rows.append(row)
+        self._refresh_list_state()
         self.add_btn.configure(state="normal", text="목록에 추가")
         self._set_status(f"추가됨: {info.title}  (총 {len(self.rows)}개)")
         self.after(30, lambda: self._apply_responsive_layout(force=True))  # 새 행 줄바꿈 폭 반영
 
-    def _on_add_error(self, err: Exception):
-        self.add_btn.configure(state="normal", text="목록에 추가")
-        self._set_status(f"조회 실패: {err}")
+    def _on_add_error(self, err: Exception, request_id: int):
+        if not self._is_current_add_request(request_id):
+            return
+        self._finish_add_request()
+        self._set_status(f"\uc870\ud68c \uc2e4\ud328: {err}")
+
+    def clear_download_list(self):
+        if self._downloading or not self.rows:
+            return
+        for row in list(self.rows):
+            row.destroy()
+        self.rows.clear()
+        if self.empty_label.winfo_exists():
+            self.empty_label.pack(pady=40)
+        self._refresh_list_state()
+        self._set_status("\ubaa9\ub85d\uc744 \ubaa8\ub450 \uc9c0\uc6e0\uc2b5\ub2c8\ub2e4.")
 
     def _remove_row(self, row: DownloadRow):
         if self._downloading:
@@ -981,6 +1111,7 @@ class App(ctk.CTk):
         self.rows.remove(row)
         if not self.rows:
             self.empty_label.pack(pady=40)
+        self._refresh_list_state()
         self._set_status(f"삭제됨  (총 {len(self.rows)}개)")
 
     def on_browse(self):
@@ -1099,6 +1230,7 @@ class App(ctk.CTk):
         self._downloading = True
         self.download_btn.configure(state="disabled", text="다운로드 중...")
         self.add_btn.configure(state="disabled")
+        self.clear_list_btn.configure(state="disabled")
         for row in self.rows:
             row.set_controls_enabled(False)
             row.set_status("대기", color=("gray40", "gray60"))
@@ -1202,6 +1334,7 @@ class App(ctk.CTk):
         self.progress.set(1.0)
         self.download_btn.configure(state="normal", text="전체 다운로드")
         self.add_btn.configure(state="normal")
+        self._update_list_header()
         for row in self.rows:
             row.set_controls_enabled(True)
         self._set_status(f"완료: {success}/{total}개 다운로드됨")

@@ -110,7 +110,7 @@ def _ffmpeg_location() -> Optional[str]:
 # ---------------------------------------------------------------------------
 # 정보 조회
 # ---------------------------------------------------------------------------
-def fetch_info(url: str) -> VideoInfo:
+def fetch_info(url: str, timeout: int = 5) -> VideoInfo:
     """
     URL로부터 영상 메타데이터를 조회한다(다운로드는 하지 않음).
     실패 시 예외를 그대로 던지므로 호출부에서 처리한다.
@@ -119,6 +119,7 @@ def fetch_info(url: str) -> VideoInfo:
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
+        "socket_timeout": timeout,
         # 플레이리스트 URL이 들어와도 첫 영상만 처리
         "noplaylist": True,
     }

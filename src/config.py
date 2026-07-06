@@ -82,6 +82,17 @@ def set_conflict_policy(policy: str) -> None:
     save_settings(data)
 
 
+def get_item_defaults() -> dict:
+    defaults = load_settings().get("item_defaults")
+    return defaults if isinstance(defaults, dict) else {}
+
+
+def set_item_defaults(defaults: dict) -> None:
+    data = load_settings()
+    data["item_defaults"] = defaults
+    save_settings(data)
+
+
 def get_window() -> dict | None:
     """마지막 창 위치/크기/최대화 상태({x,y,w,h,zoomed}) 또는 None."""
     win = load_settings().get("window")

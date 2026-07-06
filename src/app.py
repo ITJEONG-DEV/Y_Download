@@ -21,6 +21,7 @@ import threading
 import uuid
 from datetime import datetime
 from tkinter import filedialog
+import tkinter.font as tkfont
 
 import customtkinter as ctk
 import requests
@@ -68,6 +69,7 @@ AUDIO_BITRATES = ["320", "256", "192", "128"]
 # 내역 사이드 패널 폭(px) 및 좌우 여백
 HISTORY_PANEL_WIDTH = 320
 HISTORY_PANEL_GAP = 16
+HISTORY_PAGE_SIZE = 15  # 내역은 이만큼씩 렌더(나머지는 '더 보기'로) — 위젯 폭주 방지
 
 # 창 최소/기본 크기
 MIN_WINDOW_WIDTH = 820
@@ -95,33 +97,42 @@ def _quality_label(h: int) -> str:
     return HEIGHT_LABELS.get(h, f"{h}p")
 
 
-def _clamp_text(text: str, font, width: int, max_lines: int = 2) -> str:
-    """text를 width(px) 안에서 max_lines 줄로 자르고, 넘치면 마지막 줄에 …을 붙인다."""
+def _clamp_text(text: str, charw, width: int, max_lines: int = 2) -> str:
+    """
+    text를 width(px) 안에서 max_lines 줄로 자르고, 넘치면 마지막 줄에 …을 붙인다.
+    charw(ch): 문자 폭(px)을 돌려주는 (캐시된) 함수 — 누적으로 폭을 계산해 measure 호출을 없앤다.
+    """
     text = (text or "").replace("\n", " ")
     lines: list[str] = []
     cur = ""
+    cur_w = 0
     idx, n = 0, len(text)
     while idx < n:
         ch = text[idx]
-        if cur and font.measure(cur + ch) > width:
+        cw = charw(ch)
+        if cur and cur_w + cw > width:
             lines.append(cur)
-            cur = ""
+            cur, cur_w = "", 0
             if len(lines) == max_lines:
                 break
         else:
             cur += ch
+            cur_w += cw
             idx += 1
     if len(lines) < max_lines and cur:
         lines.append(cur)
     if idx < n and lines:  # 남은 글자가 있으면 잘림 → 마지막 줄에 …
+        ell = charw("…")
         last = lines[-1]
-        while last and font.measure(last + "…") > width:
+        lw = sum(charw(c) for c in last)
+        while last and lw + ell > width:
+            lw -= charw(last[-1])
             last = last[:-1]
         lines[-1] = last + "…"
     return "\n".join(lines)
 
 
-def _wrap_around(text: str, font, first_width: int, full_width: int, narrow_lines: int = 2) -> str:
+def _wrap_around(text: str, charw, first_width: int, full_width: int, narrow_lines: int = 2) -> str:
     """
     앞의 narrow_lines 줄은 first_width(버튼 자리 피함), 그 다음 줄부터 full_width로 줄바꿈.
     버튼 높이가 텍스트 두 줄에 걸치므로 기본 2줄까지 좁게 흐른다(float 흉내).
@@ -129,13 +140,16 @@ def _wrap_around(text: str, font, first_width: int, full_width: int, narrow_line
     text = (text or "").replace("\n", " ")
     lines: list[str] = []
     cur = ""
+    cur_w = 0
     for ch in text:
         width = first_width if len(lines) < narrow_lines else full_width
-        if cur and font.measure(cur + ch) > width:
+        cw = charw(ch)
+        if cur and cur_w + cw > width:
             lines.append(cur)
-            cur = ch
+            cur, cur_w = ch, cw
         else:
             cur += ch
+            cur_w += cw
     if cur:
         lines.append(cur)
     return "\n".join(lines)
@@ -323,9 +337,15 @@ class HistoryPanel(ctk.CTkFrame):
         self.app = app
         self.pack_propagate(False)  # 고정 폭 유지
         self._expanded: set[str] = set()      # 펼쳐진 항목 id
-        self.item_font = ctk.CTkFont(size=12)  # 말줄임 계산용
+        self.item_font = ctk.CTkFont(size=12)
         self._clamp_w = 240                    # 접힘 상태 텍스트 폭(px)
         self._row_frames: dict = {}            # eid -> (row 프레임, entry) : 토글 시 그 행만 갱신
+        # 폭 측정용 일반 tkinter 폰트 + 문자별 폭 캐시(CTkFont.measure는 개당 ~2ms로 매우 느림)
+        _act = self.item_font.actual()
+        self._measure_font = tkfont.Font(
+            family=_act.get("family", "Malgun Gothic"), size=_act.get("size", 12),
+        )
+        self._char_w: dict = {}
 
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=8, pady=(8, 2))
@@ -355,6 +375,13 @@ class HistoryPanel(ctk.CTkFrame):
         self._dirty = True
         self.render()
 
+    def _charw(self, ch: str) -> int:
+        w = self._char_w.get(ch)
+        if w is None:
+            w = self._measure_font.measure(ch)
+            self._char_w[ch] = w
+        return w
+
     def mark_dirty(self):
         self._dirty = True
 
@@ -366,19 +393,39 @@ class HistoryPanel(ctk.CTkFrame):
     def render(self):
         self._dirty = False
         self._row_frames = {}
+        self._more_btn = None
         for child in self.list_frame.winfo_children():
             child.destroy()
 
-        history = config.load_history()
-        if not history:
+        self._history_cache = config.load_history()
+        if not self._history_cache:
             ctk.CTkLabel(
                 self.list_frame, text="내역이 없습니다.",
                 text_color=("gray50", "gray50"),
             ).pack(pady=24)
             return
 
-        for entry in history:
+        self._shown = 0
+        self._render_next_page()
+
+    def _render_next_page(self):
+        """다음 페이지(HISTORY_PAGE_SIZE개)를 이어서 렌더. 기존 행은 건드리지 않음."""
+        if self._more_btn is not None:
+            self._more_btn.destroy()
+            self._more_btn = None
+        history = self._history_cache
+        end = min(self._shown + HISTORY_PAGE_SIZE, len(history))
+        for entry in history[self._shown:end]:
             self._make_row(entry)
+        self._shown = end
+        remaining = len(history) - self._shown
+        if remaining > 0:
+            self._more_btn = ctk.CTkButton(
+                self.list_frame, text=f"더 보기 ({remaining}개)", height=28,
+                fg_color=("gray80", "gray30"), text_color=("gray20", "gray90"),
+                hover_color=("gray70", "gray40"), command=self._render_next_page,
+            )
+            self._more_btn.pack(fill="x", padx=2, pady=(4, 2))
 
     def _make_row(self, entry: dict):
         eid = entry.get("id")
@@ -414,11 +461,11 @@ class HistoryPanel(ctk.CTkFrame):
         arrow = "▾ " if expanded else "▸ "
         full_primary = arrow + primary
         if expanded:
-            primary_text = _wrap_around(full_primary, self.item_font, first_w, content_w - 4)
+            primary_text = _wrap_around(full_primary, self._charw, first_w, content_w - 4)
             detail_text = detail + (f"\n{msg}" if msg else "")
         else:
-            primary_text = _clamp_text(full_primary, self.item_font, first_w, 1)  # 1줄
-            detail_text = _clamp_text(detail, self.item_font, content_w, 1)
+            primary_text = _clamp_text(full_primary, self._charw, first_w, 1)  # 1줄
+            detail_text = _clamp_text(detail, self._charw, content_w, 1)
 
         click_targets = [row]
 

@@ -21,7 +21,9 @@ import threading
 import uuid
 from datetime import datetime
 from tkinter import filedialog
+import tkinter as tk
 import tkinter.font as tkfont
+import bisect
 
 import customtkinter as ctk
 import requests
@@ -69,7 +71,6 @@ AUDIO_BITRATES = ["320", "256", "192", "128"]
 # 내역 사이드 패널 폭(px) 및 좌우 여백
 HISTORY_PANEL_WIDTH = 320
 HISTORY_PANEL_GAP = 16
-HISTORY_PAGE_SIZE = 15  # 내역은 이만큼씩 렌더(나머지는 '더 보기'로) — 위젯 폭주 방지
 
 # 창 최소/기본 크기
 MIN_WINDOW_WIDTH = 820
@@ -329,29 +330,135 @@ class DownloadRow(ctk.CTkFrame):
             w.configure(state=state)
 
 
+class _HistoryRow(ctk.CTkFrame):
+    """재활용되는 내역 행 위젯. bind_entry로 데이터만 갈아끼운다(RecyclerView 방식)."""
+
+    def __init__(self, master, panel: "HistoryPanel"):
+        super().__init__(master, fg_color=("gray92", "gray18"))
+        self.panel = panel
+        self._eid = None
+        self._url = None
+        self._thumb_ref = None
+        wl = panel._wraplen
+
+        self.title_lbl = ctk.CTkLabel(
+            self, anchor="w", justify="left", font=panel.item_font, wraplength=wl
+        )
+        self.title_lbl.pack(fill="x", padx=8, pady=(6, 2))
+        self.thumb_lbl = ctk.CTkLabel(self, text="")  # 펼침 시에만 pack
+        self.detail_lbl = ctk.CTkLabel(
+            self, anchor="w", justify="left", text_color=("gray40", "gray60"), wraplength=wl
+        )
+        self.detail_lbl.pack(fill="x", padx=8, pady=(0, 6))
+
+        self.btns = ctk.CTkFrame(self, fg_color="transparent")
+        self.btns.place(relx=1.0, rely=0.0, x=-6, y=6, anchor="ne")
+        self.add_btn = ctk.CTkButton(
+            self.btns, text="＋", width=27, height=24,
+            font=ctk.CTkFont(size=15, weight="bold"), command=self._on_add,
+        )
+        self.add_btn.pack(side="left", padx=(0, 3))
+        self.del_btn = ctk.CTkButton(
+            self.btns, text="🗑", width=27, height=24,
+            fg_color="#c0392b", hover_color="#a93226", text_color="white",
+            command=self._on_del,
+        )
+        self.del_btn.pack(side="left")
+
+        for w in (self, self.title_lbl, self.detail_lbl, self.thumb_lbl):
+            w.bind("<Button-1>", self._on_click)
+            w.bind("<MouseWheel>", panel._on_wheel)
+        self.add_btn.bind("<MouseWheel>", panel._on_wheel)
+        self.del_btn.bind("<MouseWheel>", panel._on_wheel)
+
+    def _on_add(self):
+        self.panel._readd(self._url)
+
+    def _on_del(self):
+        self.panel._delete(self._eid)
+
+    def _on_click(self, _e=None):
+        self.panel._toggle_expand(self._eid)
+
+    def bind_entry(self, entry: dict, expanded: bool):
+        p = self.panel
+        self._eid = entry.get("id")
+        self._url = entry.get("url")
+        ok = entry.get("status") == "성공"
+        color = ("green", "#4caf50") if ok else ("red", "#e57373")
+        status_txt = "성공" if ok else "실패"
+        filename = entry.get("filename") or ""
+        title = entry.get("title", "(제목 없음)")
+        has_fn = bool(filename) and filename != "(제목)"
+        primary = f"[{status_txt}] " + (f"{filename} ({title})" if has_fn else title)
+        detail = (
+            f"{entry.get('timestamp', '')}  "
+            f"{entry.get('kind', '')}/{entry.get('ext', '')} {entry.get('quality', '')}"
+        )
+        msg = entry.get("message")
+        cw = p._content_w
+        first_w = cw - 84
+        arrow = "▾ " if expanded else "▸ "
+        full = arrow + primary
+        if expanded:
+            self.title_lbl.configure(
+                text=_wrap_around(full, p._charw, first_w, cw - 4), text_color=color
+            )
+            self.detail_lbl.configure(text=detail + (f"\n{msg}" if msg else ""))
+        else:
+            self.title_lbl.configure(
+                text=_clamp_text(full, p._charw, first_w, 1), text_color=color
+            )
+            self.detail_lbl.configure(text=_clamp_text(detail, p._charw, cw, 1))
+
+        self.thumb_lbl.pack_forget()
+        if expanded:
+            img = p._load_thumb_image(entry.get("thumb"))
+            if img is not None:
+                self.thumb_lbl.configure(image=img)
+                self._thumb_ref = img
+                self.thumb_lbl.pack(after=self.title_lbl, padx=8, pady=2)
+
+
 class HistoryPanel(ctk.CTkFrame):
-    """다운로드 내역(성공/실패) 우측 사이드 패널. 더블클릭 재추가 / 단일·전체 삭제."""
+    """다운로드 내역 사이드 패널 — 가상 스크롤(뷰 리사이클링)로 대량 내역도 빠르게."""
+
+    BUFFER = 3  # 화면 위/아래 여유 행 수
 
     def __init__(self, master, app: "App", width: int = HISTORY_PANEL_WIDTH):
         super().__init__(master, width=width)
         self.app = app
         self.pack_propagate(False)  # 고정 폭 유지
-        self._expanded: set[str] = set()      # 펼쳐진 항목 id
+        self._expanded: set[str] = set()
         self.item_font = ctk.CTkFont(size=12)
-        self._clamp_w = 240                    # 접힘 상태 텍스트 폭(px)
-        self._row_frames: dict = {}            # eid -> (row 프레임, entry) : 토글 시 그 행만 갱신
+        self._clamp_w = 240
+        self._content_w = self._clamp_w + 20   # 제목 전체 폭(줄바꿈 계산)
+        self._wraplen = self._content_w + 12    # 라벨 wraplength
+        self._window_w = 296                    # 캔버스 창(행) 폭
         # 폭 측정용 일반 tkinter 폰트 + 문자별 폭 캐시(CTkFont.measure는 개당 ~2ms로 매우 느림)
         _act = self.item_font.actual()
         self._measure_font = tkfont.Font(
             family=_act.get("family", "Malgun Gothic"), size=_act.get("size", 12),
         )
         self._char_w: dict = {}
+        self._img_cache: dict = {}    # thumb 경로 -> CTkImage(중복 로드 방지)
+
+        # 가상 스크롤 상태
+        self._entries: list = []
+        self._offsets: list = [0]     # offsets[i]=항목 i의 시작 y, 마지막=전체 높이
+        self._total_h = 0
+        self._collapsed_h = None
+        self._exp_h: dict = {}        # eid -> 펼침 높이(측정 캐시)
+        self._pool: list = []         # 재활용 행 위젯
+        self._free: list = []         # 놀고 있는 행
+        self._winid: dict = {}        # row -> 캔버스 window id
+        self._bound: dict = {}        # 항목 index -> row
+        self._dirty = True
 
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=8, pady=(8, 2))
         ctk.CTkLabel(
-            header, text="다운로드 내역",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            header, text="다운로드 내역", font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(side="left")
         ctk.CTkButton(
             header, text="✕", width=28, fg_color="transparent",
@@ -362,19 +469,28 @@ class HistoryPanel(ctk.CTkFrame):
         toolbar = ctk.CTkFrame(self, fg_color="transparent")
         toolbar.pack(fill="x", padx=8, pady=(0, 4))
         ctk.CTkLabel(
-            toolbar, text="항목을 클릭하면 펼쳐집니다",
-            text_color=("gray40", "gray60"),
+            toolbar, text="항목을 클릭하면 펼쳐집니다", text_color=("gray40", "gray60"),
         ).pack(side="left")
         ctk.CTkButton(
             toolbar, text="전체 지우기", width=84, command=self._clear_all
         ).pack(side="right")
 
-        self.list_frame = ctk.CTkScrollableFrame(self)
-        self.list_frame.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=(4, 2), pady=(2, 6))
+        bg = "#dbdbdb" if ctk.get_appearance_mode() == "Light" else "#2b2b2b"
+        self.canvas = tk.Canvas(body, highlightthickness=0, bd=0, bg=bg)
+        self.scrollbar = ctk.CTkScrollbar(body, command=self._on_scroll)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.canvas.bind("<Configure>", lambda e: self._refresh_visible())
+        self.canvas.bind("<MouseWheel>", self._on_wheel)
+        self._empty_id = None
+        self._measure_row = _HistoryRow(self.canvas, self)  # 높이 측정 전용(미표시)
 
-        self._dirty = True
         self.render()
 
+    # ---------------------------------------------------------- 유틸
     def _charw(self, ch: str) -> int:
         w = self._char_w.get(ch)
         if w is None:
@@ -382,145 +498,130 @@ class HistoryPanel(ctk.CTkFrame):
             self._char_w[ch] = w
         return w
 
+    def _load_thumb_image(self, path):
+        if not path or not os.path.exists(path):
+            return None
+        img = self._img_cache.get(path)
+        if img is None:
+            try:
+                pil = Image.open(path)
+                img = ctk.CTkImage(light_image=pil, dark_image=pil, size=(240, 135))
+                self._img_cache[path] = img
+            except Exception:
+                return None
+        return img
+
     def mark_dirty(self):
         self._dirty = True
 
     def render_if_dirty(self):
-        """내역이 바뀐 경우에만 다시 그린다(패널 열 때 불필요한 재렌더 방지)."""
         if self._dirty:
             self.render()
 
+    # ---------------------------------------------------------- 데이터/레이아웃
     def render(self):
         self._dirty = False
-        self._row_frames = {}
-        self._more_btn = None
-        for child in self.list_frame.winfo_children():
-            child.destroy()
+        self._entries = config.load_history()
+        self._recompute_offsets()
+        self._refresh_visible(force=True)
 
-        self._history_cache = config.load_history()
-        if not self._history_cache:
-            ctk.CTkLabel(
-                self.list_frame, text="내역이 없습니다.",
-                text_color=("gray50", "gray50"),
-            ).pack(pady=24)
+    def _item_height(self, entry: dict) -> int:
+        eid = entry.get("id")
+        if eid in self._expanded:
+            h = self._exp_h.get(eid)
+            if h is None:
+                self._measure_row.bind_entry(entry, True)
+                self._measure_row.update_idletasks()
+                h = max(70, self._measure_row.winfo_reqheight())
+                self._exp_h[eid] = h
+            return h
+        if self._collapsed_h is None:
+            self._measure_row.bind_entry(entry, False)
+            self._measure_row.update_idletasks()
+            self._collapsed_h = max(40, self._measure_row.winfo_reqheight())
+        return self._collapsed_h
+
+    def _recompute_offsets(self):
+        offs = [0]
+        y = 0
+        for e in self._entries:
+            y += self._item_height(e) + 6  # 행 간 간격
+            offs.append(y)
+        self._offsets = offs
+        self._total_h = y
+        self.canvas.configure(scrollregion=(0, 0, self._window_w, max(y, 1)))
+        if not self._entries:
+            if self._empty_id is None:
+                self._empty_id = self.canvas.create_text(
+                    10, 20, text="내역이 없습니다.", anchor="nw", fill="gray")
+            self.canvas.itemconfigure(self._empty_id, state="normal")
+        elif self._empty_id is not None:
+            self.canvas.itemconfigure(self._empty_id, state="hidden")
+
+    def _refresh_visible(self, force: bool = False):
+        if not self._entries:
+            for idx in list(self._bound):
+                self._recycle(idx)
             return
+        vh = self.canvas.winfo_height()
+        top = self.canvas.canvasy(0)
+        bottom = top + vh
+        n = len(self._entries)
+        first = max(0, bisect.bisect_right(self._offsets, top) - 1 - self.BUFFER)
+        last = min(n - 1, bisect.bisect_left(self._offsets, bottom) - 1 + self.BUFFER)
 
-        self._shown = 0
-        self._render_next_page()
-
-    def _render_next_page(self):
-        """다음 페이지(HISTORY_PAGE_SIZE개)를 이어서 렌더. 기존 행은 건드리지 않음."""
-        if self._more_btn is not None:
-            self._more_btn.destroy()
-            self._more_btn = None
-        history = self._history_cache
-        end = min(self._shown + HISTORY_PAGE_SIZE, len(history))
-        for entry in history[self._shown:end]:
-            self._make_row(entry)
-        self._shown = end
-        remaining = len(history) - self._shown
-        if remaining > 0:
-            self._more_btn = ctk.CTkButton(
-                self.list_frame, text=f"더 보기 ({remaining}개)", height=28,
-                fg_color=("gray80", "gray30"), text_color=("gray20", "gray90"),
-                hover_color=("gray70", "gray40"), command=self._render_next_page,
-            )
-            self._more_btn.pack(fill="x", padx=2, pady=(4, 2))
-
-    def _make_row(self, entry: dict):
-        eid = entry.get("id")
-        row = ctk.CTkFrame(self.list_frame, fg_color=("gray92", "gray18"))
-        row.pack(fill="x", padx=2, pady=3)
-        self._row_frames[eid] = (row, entry)
-        self._populate_row(row, entry)
-
-    def _populate_row(self, row, entry: dict):
-        # 토글 시 이 행만 다시 채운다(전체 재렌더 없이).
-        for child in row.winfo_children():
-            child.destroy()
-
-        ok = entry.get("status") == "성공"
-        color = ("green", "#4caf50") if ok else ("red", "#e57373")
-        eid = entry.get("id")
-        expanded = eid in self._expanded
-
-        status_txt = "성공" if ok else "실패"
-        filename = entry.get("filename") or ""
-        title = entry.get("title", "(제목 없음)")
-        # [성공/실패] 내가저장한파일명 (영상명)
-        has_fn = bool(filename) and filename != "(제목)"
-        primary = f"[{status_txt}] " + (f"{filename} ({title})" if has_fn else title)
-        detail = (
-            f"{entry.get('timestamp', '')}  "
-            f"{entry.get('kind', '')}/{entry.get('ext', '')} {entry.get('quality', '')}"
-        )
-        msg = entry.get("message")
-
-        content_w = self._clamp_w + 20   # 제목 전체 폭
-        first_w = content_w - 84         # 첫 줄은 우측 버튼 자리를 피함
-        arrow = "▾ " if expanded else "▸ "
-        full_primary = arrow + primary
-        if expanded:
-            primary_text = _wrap_around(full_primary, self._charw, first_w, content_w - 4)
-            detail_text = detail + (f"\n{msg}" if msg else "")
+        if force:
+            for idx in list(self._bound):
+                self._recycle(idx)
         else:
-            primary_text = _clamp_text(full_primary, self._charw, first_w, 1)  # 1줄
-            detail_text = _clamp_text(detail, self._charw, content_w, 1)
+            for idx in list(self._bound):
+                if idx < first or idx > last:
+                    self._recycle(idx)
 
-        click_targets = [row]
+        for idx in range(first, last + 1):
+            if idx in self._bound:
+                continue
+            entry = self._entries[idx]
+            row = self._get_free_row()
+            row.bind_entry(entry, entry.get("id") in self._expanded)
+            wid = self._winid[row]
+            h = self._offsets[idx + 1] - self._offsets[idx] - 6
+            self.canvas.coords(wid, 2, self._offsets[idx])
+            self.canvas.itemconfigure(wid, state="normal", width=self._window_w, height=h)
+            self._bound[idx] = row
 
-        # 제목: 전체 폭 라벨(직접 줄바꿈), 첫 줄만 버튼 자리를 피해 흘러넘침
-        p = ctk.CTkLabel(
-            row, text=primary_text, anchor="w", justify="left",
-            text_color=color, wraplength=content_w + 30, font=self.item_font,
-        )
-        p.pack(fill="x", padx=8, pady=(6, 2))
-        click_targets.append(p)
+    def _get_free_row(self):
+        if self._free:
+            return self._free.pop()
+        row = _HistoryRow(self.canvas, self)
+        wid = self.canvas.create_window(2, 0, window=row, anchor="nw", state="hidden")
+        self._winid[row] = wid
+        self._pool.append(row)
+        return row
 
-        # 추가/삭제 버튼: 우측 상단에 오버레이(place) — 접힘·펼침 모두 노출
-        btns = ctk.CTkFrame(row, fg_color="transparent")
-        btns.place(relx=1.0, rely=0.0, x=-6, y=6, anchor="ne")
-        ctk.CTkButton(
-            btns, text="＋", width=27, height=24,
-            font=ctk.CTkFont(size=15, weight="bold"),
-            command=lambda u=entry.get("url"): self._readd(u),
-        ).pack(side="left", padx=(0, 3))  # 목록에 추가(강조색)
-        ctk.CTkButton(
-            btns, text="🗑", width=27, height=24,
-            fg_color="#c0392b", hover_color="#a93226", text_color="white",
-            command=lambda i=eid: self._delete(i),
-        ).pack(side="left")  # 내역에서 삭제
+    def _recycle(self, idx):
+        row = self._bound.pop(idx, None)
+        if row is not None:
+            self.canvas.itemconfigure(self._winid[row], state="hidden")
+            self._free.append(row)
 
-        # 썸네일 (펼침 + 있을 때) — 제목 아래
-        if expanded:
-            img = self._load_thumb_image(entry.get("thumb"))
-            if img is not None:
-                thumb_lbl = ctk.CTkLabel(row, text="", image=img)
-                thumb_lbl._thumb_ref = img  # GC 방지(라벨 수명과 연동)
-                thumb_lbl.pack(padx=8, pady=2)
-                click_targets.append(thumb_lbl)
+    # ---------------------------------------------------------- 스크롤
+    def _on_scroll(self, *args):
+        self.canvas.yview(*args)
+        self._refresh_visible()
 
-        # 날짜/포맷 등
-        d = ctk.CTkLabel(
-            row, text=detail_text, anchor="w", justify="left",
-            text_color=("gray40", "gray60"), wraplength=content_w + 30,
-        )
-        d.pack(fill="x", padx=8, pady=(0, 6))
-        click_targets.append(d)
+    def _on_wheel(self, event):
+        vh = self.canvas.winfo_height()
+        if self._total_h <= vh:
+            return "break"
+        step = -60 if event.delta > 0 else 60
+        top = self.canvas.canvasy(0)
+        new_top = max(0, min(top + step, self._total_h - vh))
+        self.canvas.yview_moveto(new_top / self._total_h)
+        self._refresh_visible()
+        return "break"
 
-        # 클릭 → 펼침/접힘 토글 (버튼 제외)
-        for w in click_targets:
-            w.bind("<Button-1>", lambda e, i=eid: self._toggle_expand(i))
-
-    def _load_thumb_image(self, path):
-        if not path or not os.path.exists(path):
-            return None
-        try:
-            img = Image.open(path)
-            return ctk.CTkImage(light_image=img, dark_image=img, size=(240, 135))
-        except Exception:
-            return None
-
+    # ---------------------------------------------------------- 액션
     def _toggle_expand(self, eid):
         if not eid:
             return
@@ -528,13 +629,16 @@ class HistoryPanel(ctk.CTkFrame):
             self._expanded.discard(eid)
         else:
             self._expanded.add(eid)
-        # 전체 재렌더 대신 해당 행만 다시 채워 화면 끊김 방지
-        entry = self._row_frames.get(eid)
-        if entry:
-            row, data = entry
-            self._populate_row(row, data)
-        else:
-            self.render()
+        self._recompute_offsets()  # 높이 변화 → 오프셋 재계산
+        # 보이는 행은 위치만 이동(coords, 재그리기 없음), 토글된 행만 다시 바인딩(재그리기 1행)
+        for idx, row in list(self._bound.items()):
+            wid = self._winid[row]
+            self.canvas.coords(wid, 2, self._offsets[idx])
+            if self._entries[idx].get("id") == eid:
+                h = self._offsets[idx + 1] - self._offsets[idx] - 6
+                self.canvas.itemconfigure(wid, height=h)
+                row.bind_entry(self._entries[idx], eid in self._expanded)
+        self._refresh_visible()  # 아래로 밀려난 만큼 가장자리 행 추가/회수
 
     def _readd(self, url: str | None):
         if url:
@@ -542,10 +646,14 @@ class HistoryPanel(ctk.CTkFrame):
 
     def _delete(self, entry_id: str | None):
         config.delete_history(entry_id)
+        self._expanded.discard(entry_id)
+        self._exp_h.pop(entry_id, None)
         self.render()
 
     def _clear_all(self):
         config.clear_history()
+        self._expanded.clear()
+        self._exp_h.clear()
         self.render()
 
 

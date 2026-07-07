@@ -26,11 +26,12 @@ from datetime import datetime
 import requests
 from PIL import Image
 from PySide6.QtCore import Qt, QObject, QTimer, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QDockWidget, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
-    QMessageBox, QProgressBar, QPushButton, QTextEdit, QVBoxLayout, QWidget,
+    QMessageBox, QProgressBar, QPushButton, QSizePolicy, QTextEdit,
+    QVBoxLayout, QWidget,
 )
 
 import config
@@ -56,6 +57,7 @@ AUDIO_BITRATES = ["320", "256", "192", "128"]
 INFO_FETCH_TIMEOUT_SEC = 5
 ENRICH_CONCURRENCY = 3
 THUMB_W, THUMB_H = 120, 68
+HISTORY_PANEL_WIDTH = 320  # 내역 패널을 열 때 창을 넓히는 폭(창모드)
 
 
 def _quality_label(h: int) -> str:
@@ -290,6 +292,30 @@ class DownloadRow(QWidget):
 # ---------------------------------------------------------------------------
 # 내역 패널
 # ---------------------------------------------------------------------------
+class ElidedLabel(QLabel):
+    """가로 폭을 넘으면 …으로 축약해 그리는 라벨(접힘=1줄). wordWrap을 켜면 일반 줄바꿈."""
+
+    def __init__(self, text: str = ""):
+        super().__init__(text)
+        self._full = text
+        # 가로로 sizeHint를 무시(행을 넓히지 않음 → 옆 버튼이 밀려나지 않음)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+
+    def setText(self, text: str):
+        self._full = text
+        super().setText(text)
+        self.update()
+
+    def paintEvent(self, ev):
+        if self.wordWrap():
+            super().paintEvent(ev)  # 펼침: 정상 줄바꿈
+            return
+        painter = QPainter(self)
+        fm = self.fontMetrics()
+        elided = fm.elidedText(self._full, Qt.ElideRight, self.width())
+        painter.drawText(self.rect(), int(self.alignment()) | int(Qt.AlignVCenter), elided)
+
+
 class HistoryRow(QWidget):
     """내역 한 건. 클릭하면 펼쳐져 썸네일/메시지를 보여준다."""
 
@@ -307,8 +333,8 @@ class HistoryRow(QWidget):
         v.setSpacing(3)
 
         top = QHBoxLayout()
-        self.title_lbl = QLabel()
-        self.title_lbl.setWordWrap(True)
+        self.title_lbl = ElidedLabel()
+        self.title_lbl.setWordWrap(False)  # 접힘 기본: 1줄 축약
         top.addWidget(self.title_lbl, 1)
         add_btn = QPushButton("＋")
         add_btn.setFixedSize(26, 24)
@@ -327,8 +353,8 @@ class HistoryRow(QWidget):
         self.thumb_lbl.setVisible(False)
         v.addWidget(self.thumb_lbl)
 
-        self.detail_lbl = QLabel()
-        self.detail_lbl.setWordWrap(True)
+        self.detail_lbl = ElidedLabel()
+        self.detail_lbl.setWordWrap(False)  # 접힘 기본: 1줄 축약
         self.detail_lbl.setStyleSheet("color:gray;")
         v.addWidget(self.detail_lbl)
 
@@ -344,6 +370,9 @@ class HistoryRow(QWidget):
         has_fn = bool(filename) and filename != "(제목)"
         primary = f"[{status_txt}] " + (f"{filename} ({title})" if has_fn else title)
         arrow = "▾ " if self._expanded else "▸ "
+        # 펼침일 때만 줄바꿈 허용(접힘은 1줄 축약)
+        self.title_lbl.setWordWrap(self._expanded)
+        self.detail_lbl.setWordWrap(self._expanded)
         self.title_lbl.setText(arrow + primary)
         self.title_lbl.setStyleSheet(f"color:{color};")
         detail = (f"{e.get('timestamp', '')}  "
@@ -555,8 +584,9 @@ class MainWindow(QMainWindow):
         self.history_panel = HistoryPanel(self)
         self.history_dock = QDockWidget("내역", self)
         self.history_dock.setWidget(self.history_panel)
-        self.history_dock.setFeatures(
-            QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
+        # 버튼으로만 토글되도록 고정(닫기/이동/플로팅 비활성) + 자체 헤더가 있으니 도크 타이틀바 숨김
+        self.history_dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
+        self.history_dock.setTitleBarWidget(QWidget())
         self.addDockWidget(Qt.RightDockWidgetArea, self.history_dock)
         self.history_dock.hide()
         self.history_dock.visibilityChanged.connect(
@@ -913,9 +943,25 @@ class MainWindow(QMainWindow):
     def toggle_history(self):
         if self.history_dock.isVisible():
             self.history_dock.hide()
+            self._grow_width(-1)
         else:
             self.history_panel.render()
             self.history_dock.show()
+            self._grow_width(+1)
+
+    def _grow_width(self, direction: int):
+        """창모드에서 내역 패널 폭만큼 창을 넓히거나(+) 되돌린다(-). 최대화면은 그대로."""
+        if self.isMaximized() or self.isFullScreen():
+            return
+        g = self.geometry()
+        delta = HISTORY_PANEL_WIDTH if direction > 0 else -HISTORY_PANEL_WIDTH
+        new_w = max(600, g.width() + delta)
+        x = g.x()
+        scr = self.screen().availableGeometry() if self.screen() else None
+        # 오른쪽으로 넘치면 창을 왼쪽으로 밀어 화면 안에 유지
+        if scr is not None and direction > 0 and x + new_w > scr.right():
+            x = max(scr.left(), scr.right() - new_w + 1)
+        self.setGeometry(x, g.y(), new_w, g.height())
 
     # ------------------------------------------------------ 자동 업데이트
     def _start_update_check(self):

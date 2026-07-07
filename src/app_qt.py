@@ -25,15 +25,16 @@ from datetime import datetime
 
 import requests
 from PIL import Image
-from PySide6.QtCore import Qt, QObject, Signal
+from PySide6.QtCore import Qt, QObject, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QProgressBar, QPushButton, QVBoxLayout, QWidget,
+    QApplication, QComboBox, QDialog, QDockWidget, QFileDialog, QFrame,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+    QMessageBox, QProgressBar, QPushButton, QTextEdit, QVBoxLayout, QWidget,
 )
 
 import config
+import updater
 from downloader import (
     VideoInfo, PlaylistEntry,
     fetch_info, fetch_playlist, is_playlist_url, download,
@@ -287,6 +288,162 @@ class DownloadRow(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# 내역 패널
+# ---------------------------------------------------------------------------
+class HistoryRow(QWidget):
+    """내역 한 건. 클릭하면 펼쳐져 썸네일/메시지를 보여준다."""
+
+    def __init__(self, panel: "HistoryPanel", entry: dict):
+        super().__init__()
+        self.panel = panel
+        self.entry = entry
+        self.eid = entry.get("id")
+        self.url = entry.get("url")
+        self._expanded = False
+        self._item = None
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(8, 6, 8, 6)
+        v.setSpacing(3)
+
+        top = QHBoxLayout()
+        self.title_lbl = QLabel()
+        self.title_lbl.setWordWrap(True)
+        top.addWidget(self.title_lbl, 1)
+        add_btn = QPushButton("＋")
+        add_btn.setFixedSize(26, 24)
+        add_btn.setToolTip("다운로드 목록에 다시 추가")
+        add_btn.clicked.connect(lambda: panel.readd(self.url))
+        del_btn = QPushButton("🗑")
+        del_btn.setFixedSize(26, 24)
+        del_btn.setStyleSheet("background:#c0392b; color:white;")
+        del_btn.setToolTip("이 내역 삭제")
+        del_btn.clicked.connect(lambda: panel.delete(self.eid))
+        top.addWidget(add_btn, 0, Qt.AlignTop)
+        top.addWidget(del_btn, 0, Qt.AlignTop)
+        v.addLayout(top)
+
+        self.thumb_lbl = QLabel()
+        self.thumb_lbl.setVisible(False)
+        v.addWidget(self.thumb_lbl)
+
+        self.detail_lbl = QLabel()
+        self.detail_lbl.setWordWrap(True)
+        self.detail_lbl.setStyleSheet("color:gray;")
+        v.addWidget(self.detail_lbl)
+
+        self._build_text()
+
+    def _build_text(self):
+        e = self.entry
+        ok = e.get("status") == "성공"
+        color = "#4caf50" if ok else "#e57373"
+        status_txt = "성공" if ok else "실패"
+        filename = e.get("filename") or ""
+        title = e.get("title", "(제목 없음)")
+        has_fn = bool(filename) and filename != "(제목)"
+        primary = f"[{status_txt}] " + (f"{filename} ({title})" if has_fn else title)
+        arrow = "▾ " if self._expanded else "▸ "
+        self.title_lbl.setText(arrow + primary)
+        self.title_lbl.setStyleSheet(f"color:{color};")
+        detail = (f"{e.get('timestamp', '')}  "
+                  f"{e.get('kind', '')}/{e.get('ext', '')} {e.get('quality', '')}")
+        msg = e.get("message")
+        if self._expanded and msg:
+            detail += f"\n{msg}"
+        self.detail_lbl.setText(detail)
+
+    def mousePressEvent(self, ev):
+        self.panel.toggle(self)
+        super().mousePressEvent(ev)
+
+    def set_expanded(self, expanded: bool):
+        self._expanded = expanded
+        self._build_text()
+        if expanded:
+            pm = self.panel.load_thumb(self.entry.get("thumb"))
+            self.thumb_lbl.setPixmap(pm) if pm is not None else self.thumb_lbl.clear()
+            self.thumb_lbl.setVisible(pm is not None)
+        else:
+            self.thumb_lbl.setVisible(False)
+
+
+class HistoryPanel(QWidget):
+    """우측 다운로드 내역 패널."""
+
+    def __init__(self, main: "MainWindow"):
+        super().__init__()
+        self.main = main
+        self._thumb_cache: dict[str, QPixmap] = {}
+        self.setMinimumWidth(300)
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(6, 6, 6, 6)
+        v.setSpacing(6)
+
+        header = QHBoxLayout()
+        header.addWidget(QLabel("다운로드 내역"))
+        header.addStretch(1)
+        clear_btn = QPushButton("전체 지우기")
+        clear_btn.clicked.connect(self.clear_all)
+        header.addWidget(clear_btn)
+        v.addLayout(header)
+
+        self.list = QListWidget()
+        self.list.setSpacing(4)
+        v.addWidget(self.list, 1)
+        self.empty = QLabel("내역이 없습니다.")
+        self.empty.setAlignment(Qt.AlignCenter)
+        self.empty.setStyleSheet("color:gray; padding:16px;")
+        v.addWidget(self.empty)
+
+        self.render()
+
+    def render(self):
+        self.list.clear()
+        entries = config.load_history()
+        self.empty.setVisible(not entries)
+        self.list.setVisible(bool(entries))
+        for e in entries:
+            row = HistoryRow(self, e)
+            item = QListWidgetItem(self.list)
+            item.setSizeHint(row.sizeHint())
+            self.list.addItem(item)
+            self.list.setItemWidget(item, row)
+            row._item = item
+
+    def toggle(self, row: HistoryRow):
+        row.set_expanded(not row._expanded)
+        row.adjustSize()
+        if row._item is not None:
+            row._item.setSizeHint(row.sizeHint())
+
+    def load_thumb(self, path):
+        if not path or not os.path.exists(path):
+            return None
+        if path in self._thumb_cache:
+            return self._thumb_cache[path]
+        pm = QPixmap(path)
+        if pm.isNull():
+            return None
+        pm = pm.scaledToWidth(220, Qt.SmoothTransformation)
+        self._thumb_cache[path] = pm
+        return pm
+
+    def readd(self, url):
+        if url:
+            self.main.add_url(url)
+
+    def delete(self, eid):
+        config.delete_history(eid)
+        self.render()
+
+    def clear_all(self):
+        config.clear_history()
+        self.render()
+
+
+# ---------------------------------------------------------------------------
 # 메인 창
 # ---------------------------------------------------------------------------
 class MainWindow(QMainWindow):
@@ -335,6 +492,10 @@ class MainWindow(QMainWindow):
         self.add_btn = QPushButton("목록에 추가")
         self.add_btn.clicked.connect(self.on_add)
         urlbar.addWidget(self.add_btn)
+        self.history_btn = QPushButton("내역")
+        self.history_btn.setCheckable(True)
+        self.history_btn.clicked.connect(self.toggle_history)
+        urlbar.addWidget(self.history_btn)
         outer.addLayout(urlbar)
 
         # 목록
@@ -390,7 +551,22 @@ class MainWindow(QMainWindow):
         self.status_label.setStyleSheet("color:gray;")
         outer.addWidget(self.status_label)
 
+        # 우측 내역 패널(도크) — 처음엔 숨김
+        self.history_panel = HistoryPanel(self)
+        self.history_dock = QDockWidget("내역", self)
+        self.history_dock.setWidget(self.history_panel)
+        self.history_dock.setFeatures(
+            QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.history_dock)
+        self.history_dock.hide()
+        self.history_dock.visibilityChanged.connect(
+            lambda vis: self.history_btn.setChecked(vis))
+
         self._refresh_empty()
+
+        # 패키지 빌드에서만 실행 시 업데이트 확인(개발 소스 실행은 건너뜀)
+        if updater.build_kind() != "dev":
+            QTimer.singleShot(1500, self._start_update_check)
 
     def _set_status(self, text: str):
         self.status_label.setText(text)
@@ -729,6 +905,78 @@ class MainWindow(QMainWindow):
         for row in self.rows:
             row.set_controls_enabled(True)
         self._set_status(f"완료: {success}/{total}개 다운로드됨")
+        # 내역 갱신(패널이 열려 있으면 즉시 반영)
+        if self.history_dock.isVisible():
+            self.history_panel.render()
+
+    # ------------------------------------------------------ 내역 패널
+    def toggle_history(self):
+        if self.history_dock.isVisible():
+            self.history_dock.hide()
+        else:
+            self.history_panel.render()
+            self.history_dock.show()
+
+    # ------------------------------------------------------ 자동 업데이트
+    def _start_update_check(self):
+        threading.Thread(target=self._update_check_worker, daemon=True).start()
+
+    def _update_check_worker(self):
+        try:
+            latest = updater.check_update(__version__)
+        except Exception:
+            return  # 네트워크 오류 등은 조용히 무시
+        if latest:
+            self._post(lambda: self._show_update_modal(latest))
+
+    def _show_update_modal(self, latest: dict):
+        newver = latest["tag"].lstrip("vV")
+        dlg = QDialog(self)
+        dlg.setWindowTitle("업데이트")
+        dlg.setMinimumWidth(420)
+        v = QVBoxLayout(dlg)
+        head = QLabel("새로운 버전이 릴리즈 되었습니다.\n업데이트하시겠습니까?")
+        head.setAlignment(Qt.AlignCenter)
+        v.addWidget(head)
+        v.addWidget(QLabel(f"현재 {__version__}    →    새 버전 {newver}"), 0, Qt.AlignCenter)
+        box = QTextEdit()
+        box.setReadOnly(True)
+        box.setFixedHeight(150)
+        box.setPlainText(updater.extract_summary(latest.get("body", "")))
+        v.addWidget(box)
+        status = QLabel("")
+        status.setStyleSheet("color:gray;")
+        v.addWidget(status)
+
+        bar = QHBoxLayout()
+        bar.addStretch(1)
+        later = QPushButton("나중에")
+        later.clicked.connect(dlg.reject)
+        ok = QPushButton("확인")
+        bar.addWidget(later)
+        bar.addWidget(ok)
+        v.addLayout(bar)
+
+        def do_update():
+            try:
+                updater.download_and_apply(
+                    latest, updater.build_kind(),
+                    progress=lambda p: self._post(lambda: status.setText(f"다운로드 중... {p:.0f}%")),
+                )
+                self._post(lambda: status.setText("교체 후 재시작합니다..."))
+                self._post(lambda: QApplication.instance().quit())  # 종료하면 도우미가 교체
+            except Exception as e:
+                self._post(lambda e=e: status.setText(f"실패: {str(e)[:60]}"))
+                self._post(lambda: (ok.setEnabled(True), later.setEnabled(True)))
+
+        def on_ok():
+            ok.setEnabled(False)
+            later.setEnabled(False)
+            status.setText("다운로드 준비 중...")
+            threading.Thread(target=do_update, daemon=True).start()
+
+        ok.clicked.connect(on_ok)
+        dlg.exec()
 
     # ------------------------------------------------------ 창 위치 저장
     def _restore_geometry(self):

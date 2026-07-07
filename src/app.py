@@ -1,18 +1,18 @@
 """
 app.py
 ------
-CustomTkinter 기반 데스크톱 GUI. 진입점.
+PySide6(Qt) 기반 데스크톱 GUI. 진입점. (구 CustomTkinter 판에서 이식 완료)
 
-동작 개요:
-1) URL 입력 후 [목록에 추가] -> 조회 후 목록(큐)에 항목이 추가됨
-2) 각 항목마다 파일명 / 확장자 / 포맷(영상·음원) / 품질을 개별 설정 (예상 크기 표시)
-3) 저장 위치는 하단에서 일괄(공통) 설정 — 마지막 위치를 기억함
-4) [전체 다운로드] -> 목록의 모든 항목을 순차 다운로드
-5) [다운로드 내역] -> 성공/실패 기록 확인, 항목 더블클릭 시 목록에 재추가
+기능:
+  - URL 추가(단일 / 재생목록 감지 → 개수 확인 → 전체 추가 + 개별 조회)
+  - 다운로드 목록(번호·썸네일·제목·파일명·확장자·포맷·품질·예상크기·상태·삭제)
+  - 저장 위치(변경/열기) + 파일명 중복 정책
+  - 전체 다운로드 + 진행률 + 상태표시, 내역 기록
+  - 우측 내역 패널(펼침·재추가·삭제·전체지우기), 자동 업데이트 모달
 
-무거운 작업(조회/다운로드)은 별도 스레드에서 실행하여 GUI가 멈추지 않게 한다.
+백엔드(downloader/config/updater)는 UI 무관이라 그대로 재사용한다.
+스레드에서 UI를 만지지 않도록, 워커는 self._post(fn)로 메인 스레드에 콜백을 넘긴다.
 """
-
 from __future__ import annotations
 
 import io
@@ -21,287 +21,191 @@ import queue
 import threading
 import uuid
 from datetime import datetime
-from tkinter import filedialog
-import tkinter as tk
-import tkinter.font as tkfont
-import bisect
 
-import customtkinter as ctk
 import requests
 from PIL import Image
-
-import config
-from downloader import (
-    VideoInfo,
-    fetch_info,
-    fetch_playlist,
-    is_playlist_url,
-    download,
-    sanitize_filename,
-    estimate_size,
-    format_size,
-    VIDEO_EXTS,
-    AUDIO_EXTS,
-    CONFLICT_POLICIES,
+from PySide6.QtCore import Qt, QObject, QTimer, Signal
+from PySide6.QtGui import QPainter, QPixmap
+from PySide6.QtWidgets import (
+    QApplication, QComboBox, QDialog, QDockWidget, QFileDialog, QFrame,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+    QMessageBox, QProgressBar, QPushButton, QSizePolicy, QTextEdit,
+    QVBoxLayout, QWidget,
 )
 
+import config
 import updater
-
-# 파일명 중복 처리 정책 라벨(표시용) ↔ 내부값
-CONFLICT_LABELS = {"number": "자동 번호", "overwrite": "덮어쓰기", "skip": "건너뛰기"}
+from downloader import (
+    VideoInfo, PlaylistEntry,
+    fetch_info, fetch_playlist, is_playlist_url, download,
+    sanitize_filename, estimate_size, format_size,
+    VIDEO_EXTS, AUDIO_EXTS, CONFLICT_POLICIES,
+)
 
 try:
     from version import __version__
 except Exception:
-    __version__ = "dev"
+    __version__ = "0.0.0"
 
-
-ctk.set_appearance_mode("System")
-ctk.set_default_color_theme("blue")
-
+CONFLICT_LABELS = {"number": "자동 번호", "overwrite": "덮어쓰기", "skip": "건너뛰기"}
 HEIGHT_LABELS = {
-    2160: "2160p (4K)",
-    1440: "1440p (2K)",
-    1080: "1080p (FHD)",
-    720: "720p (HD)",
-    480: "480p",
-    360: "360p",
-    240: "240p",
-    144: "144p",
+    2160: "2160p (4K)", 1440: "1440p (2K)", 1080: "1080p (FHD)", 720: "720p (HD)",
+    480: "480p", 360: "360p", 240: "240p", 144: "144p",
 }
 AUDIO_BITRATES = ["320", "256", "192", "128"]
 INFO_FETCH_TIMEOUT_SEC = 5
-# 재생목록 항목의 상세 정보를 병렬로 조회할 때 동시 실행 수
 ENRICH_CONCURRENCY = 3
-
-# 내역 사이드 패널 폭(px) 및 좌우 여백
-HISTORY_PANEL_WIDTH = 320
-HISTORY_PANEL_GAP = 16
-
-# 창 최소/기본 크기
-MIN_WINDOW_WIDTH = 820
-MIN_WINDOW_HEIGHT = 580
-DEFAULT_WINDOW_WIDTH = 880
-DEFAULT_WINDOW_HEIGHT = 660
-
-
-def _virtual_screen_bounds():
-    """모든 모니터를 포함하는 가상 데스크톱 경계 (vx, vy, vw, vh). 실패 시 None."""
-    try:
-        import ctypes
-        u = ctypes.windll.user32
-        return (
-            u.GetSystemMetrics(76),  # SM_XVIRTUALSCREEN
-            u.GetSystemMetrics(77),  # SM_YVIRTUALSCREEN
-            u.GetSystemMetrics(78),  # SM_CXVIRTUALSCREEN
-            u.GetSystemMetrics(79),  # SM_CYVIRTUALSCREEN
-        )
-    except Exception:
-        return None
+THUMB_W, THUMB_H = 120, 68
+HISTORY_PANEL_WIDTH = 320  # 내역 패널을 열 때 창을 넓히는 폭(창모드)
 
 
 def _quality_label(h: int) -> str:
     return HEIGHT_LABELS.get(h, f"{h}p")
 
 
-def _clamp_text(text: str, charw, width: int, max_lines: int = 2) -> str:
-    """
-    text를 width(px) 안에서 max_lines 줄로 자르고, 넘치면 마지막 줄에 …을 붙인다.
-    charw(ch): 문자 폭(px)을 돌려주는 (캐시된) 함수 — 누적으로 폭을 계산해 measure 호출을 없앤다.
-    """
-    text = (text or "").replace("\n", " ")
-    lines: list[str] = []
-    cur = ""
-    cur_w = 0
-    idx, n = 0, len(text)
-    while idx < n:
-        ch = text[idx]
-        cw = charw(ch)
-        if cur and cur_w + cw > width:
-            lines.append(cur)
-            cur, cur_w = "", 0
-            if len(lines) == max_lines:
-                break
-        else:
-            cur += ch
-            cur_w += cw
-            idx += 1
-    if len(lines) < max_lines and cur:
-        lines.append(cur)
-    if idx < n and lines:  # 남은 글자가 있으면 잘림 → 마지막 줄에 …
-        ell = charw("…")
-        last = lines[-1]
-        lw = sum(charw(c) for c in last)
-        while last and lw + ell > width:
-            lw -= charw(last[-1])
-            last = last[:-1]
-        lines[-1] = last + "…"
-    return "\n".join(lines)
+def _pixmap_from_bytes(data: bytes | None) -> QPixmap | None:
+    """(메인 스레드에서) 이미지 바이트를 썸네일 QPixmap으로. 실패 시 None."""
+    if not data:
+        return None
+    pm = QPixmap()
+    if not pm.loadFromData(data):
+        return None
+    return pm.scaled(THUMB_W, THUMB_H, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
 
-def _wrap_around(text: str, charw, first_width: int, full_width: int, narrow_lines: int = 2) -> str:
-    """
-    앞의 narrow_lines 줄은 first_width(버튼 자리 피함), 그 다음 줄부터 full_width로 줄바꿈.
-    버튼 높이가 텍스트 두 줄에 걸치므로 기본 2줄까지 좁게 흐른다(float 흉내).
-    """
-    text = (text or "").replace("\n", " ")
-    lines: list[str] = []
-    cur = ""
-    cur_w = 0
-    for ch in text:
-        width = first_width if len(lines) < narrow_lines else full_width
-        cw = charw(ch)
-        if cur and cur_w + cw > width:
-            lines.append(cur)
-            cur, cur_w = ch, cw
-        else:
-            cur += ch
-            cur_w += cw
-    if cur:
-        lines.append(cur)
-    return "\n".join(lines)
+def _fetch_thumb_bytes(url: str) -> bytes | None:
+    """(워커 스레드에서) 썸네일 이미지를 내려받아 바이트로. QPixmap 생성은 메인에서."""
+    if not url:
+        return None
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        return resp.content
+    except Exception:
+        return None
 
 
-class DownloadRow(ctk.CTkFrame):
-    """목록의 한 항목. 자체 위젯과 상태(VideoInfo)를 가진다."""
+class _Bridge(QObject):
+    """워커 스레드가 넘긴 콜러블을 메인 스레드 이벤트 루프에서 실행."""
+    invoke = Signal(object)
 
-    def __init__(self, master, info: VideoInfo, thumb, on_remove, defaults=None, on_defaults_change=None):
-        super().__init__(master, fg_color=("gray90", "gray20"))
+    def __init__(self):
+        super().__init__()
+        self.invoke.connect(lambda fn: fn())
+
+
+# ---------------------------------------------------------------------------
+# 목록의 한 행
+# ---------------------------------------------------------------------------
+class DownloadRow(QWidget):
+    def __init__(self, info: VideoInfo, pixmap: QPixmap | None, on_remove,
+                 defaults: dict | None = None, on_defaults_change=None):
+        super().__init__()
         self.info = info
-        self._thumb = thumb
         self._on_remove = on_remove
         self._defaults = defaults or {}
         self._on_defaults_change = on_defaults_change
         self._initializing = True
-        self._last_wl = 0
 
-        self.index_label = ctk.CTkLabel(
-            self, text="", width=34, anchor="center",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=("gray35", "gray65"),
-        )
-        self.index_label.pack(side="left", fill="y", padx=(8, 0), pady=8)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(6, 4, 6, 4)
+        root.setSpacing(8)
 
-        # 썸네일 (고정)
-        self.thumb_label = ctk.CTkLabel(self, text="", image=thumb, width=120, height=68)
-        self.thumb_label.pack(side="left", padx=(6, 8), pady=8)
+        self.index_label = QLabel("")
+        self.index_label.setFixedWidth(26)
+        self.index_label.setAlignment(Qt.AlignCenter)
 
-        # 우측 콘텐츠 (가변 폭 — 창/목록 폭에 따라 늘고 줄어듦)
-        right = ctk.CTkFrame(self, fg_color="transparent")
-        right.pack(side="left", fill="both", expand=True, padx=(0, 6), pady=6)
+        self.thumb_label = QLabel()
+        self.thumb_label.setFixedSize(THUMB_W, THUMB_H)
+        self.thumb_label.setStyleSheet("background:#2b2b2b; border-radius:4px;")
+        self._set_pixmap(pixmap)
 
-        # 1줄: 제목 + 삭제 버튼
-        titlebar = ctk.CTkFrame(right, fg_color="transparent")
-        titlebar.pack(fill="x")
-        self.remove_btn = ctk.CTkButton(
-            titlebar, text="✕", width=28, fg_color="transparent",
-            text_color=("gray30", "gray70"), hover_color=("gray80", "gray30"),
-            command=lambda: self._on_remove(self),
-        )
-        self.remove_btn.pack(side="right")
-        self.title_label = ctk.CTkLabel(
-            titlebar, text=f"{info.title}   ({info.duration_str})",
-            anchor="w", justify="left",
-        )
-        self.title_label.pack(side="left", fill="x", expand=True)
-        # 줄바꿈 폭은 App이 리사이즈(디바운스) 시 일괄로 갱신한다.
-        # (행마다 <Configure>를 바인딩하면 리사이즈 때 이벤트 폭주로 크게 느려짐)
-        self.title_label.configure(wraplength=500)  # 초기값
+        right = QVBoxLayout()
+        right.setSpacing(3)
 
-        # 2줄: 파일명 + 확장자
-        namebar = ctk.CTkFrame(right, fg_color="transparent")
-        namebar.pack(fill="x", pady=(4, 0))
-        ctk.CTkLabel(namebar, text="파일명:").pack(side="left")
-        self.name_entry = ctk.CTkEntry(namebar)
-        self.name_entry.insert(0, sanitize_filename(info.title))
-        self.name_entry.pack(side="left", fill="x", expand=True, padx=(4, 8))
-        self.name_entry.bind("<Up>", self._cursor_home)      # 커서 맨 앞으로
-        self.name_entry.bind("<Down>", self._cursor_end)     # 커서 맨 뒤로
-        ctk.CTkLabel(namebar, text="확장자:").pack(side="left")
-        self.ext_menu = ctk.CTkOptionMenu(
-            namebar, values=VIDEO_EXTS, width=88, dynamic_resizing=False,
-            command=lambda _=None: self._on_option_change(),
-        )
-        self.ext_menu.pack(side="left", padx=(4, 0))
+        titlebar = QHBoxLayout()
+        self.title_label = QLabel(f"{info.title}   ({info.duration_str})")
+        self.title_label.setWordWrap(True)
+        titlebar.addWidget(self.title_label, 1)
+        self.remove_btn = QPushButton("✕")
+        self.remove_btn.setFixedWidth(30)
+        self.remove_btn.clicked.connect(lambda: self._on_remove(self))
+        titlebar.addWidget(self.remove_btn, 0, Qt.AlignTop)
 
-        # 3줄: 포맷 + 품질 + 예상크기 + 상태
-        ctrlbar = ctk.CTkFrame(right, fg_color="transparent")
-        ctrlbar.pack(fill="x", pady=(4, 2))
-        ctk.CTkLabel(ctrlbar, text="포맷:").pack(side="left")
-        self.kind_menu = ctk.CTkOptionMenu(
-            ctrlbar, values=["영상", "음원"], width=80, dynamic_resizing=False,
-            command=self._on_kind_change,
-        )
-        self.kind_menu.pack(side="left", padx=(4, 10))
-        ctk.CTkLabel(ctrlbar, text="품질:").pack(side="left")
-        self.quality_menu = ctk.CTkOptionMenu(
-            ctrlbar, values=["최고"], width=126, dynamic_resizing=False,
-            command=lambda _=None: self._on_option_change(),
-        )
-        self.quality_menu.pack(side="left", padx=(4, 10))
+        namebar = QHBoxLayout()
+        namebar.addWidget(QLabel("파일명:"))
+        self.name_entry = QLineEdit(sanitize_filename(info.title))
+        namebar.addWidget(self.name_entry, 1)
+        namebar.addWidget(QLabel("확장자:"))
+        self.ext_menu = QComboBox()
+        self.ext_menu.setMinimumWidth(84)
+        namebar.addWidget(self.ext_menu)
 
-        # 상태 — 고정 폭 셀(텍스트가 바뀌어도 폭 고정), 우측 정렬
-        status_cell = ctk.CTkFrame(ctrlbar, width=88, height=24, fg_color="transparent")
-        status_cell.pack(side="right")
-        status_cell.pack_propagate(False)
-        self.status_label = ctk.CTkLabel(
-            status_cell, text="대기", anchor="w", text_color=("gray40", "gray60")
-        )
-        self.status_label.pack(side="left", fill="x")
+        ctrlbar = QHBoxLayout()
+        ctrlbar.addWidget(QLabel("포맷:"))
+        self.kind_menu = QComboBox()
+        self.kind_menu.addItems(["영상", "음원"])
+        self.kind_menu.currentIndexChanged.connect(self._on_kind_change)
+        ctrlbar.addWidget(self.kind_menu)
+        ctrlbar.addWidget(QLabel("품질:"))
+        self.quality_menu = QComboBox()
+        self.quality_menu.setMinimumWidth(120)
+        self.quality_menu.currentIndexChanged.connect(lambda _=0: self._on_option_change())
+        ctrlbar.addWidget(self.quality_menu)
+        ctrlbar.addStretch(1)
+        self.size_label = QLabel("예상: -")
+        self.size_label.setStyleSheet("color:gray;")
+        ctrlbar.addWidget(self.size_label)
+        self.status_label = QLabel("대기")
+        self.status_label.setFixedWidth(96)
+        self.status_label.setStyleSheet("color:gray;")
+        ctrlbar.addWidget(self.status_label)
 
-        # 예상 크기 — 고정 폭 셀
-        size_cell = ctk.CTkFrame(ctrlbar, width=124, height=24, fg_color="transparent")
-        size_cell.pack(side="right", padx=(0, 6))
-        size_cell.pack_propagate(False)
-        self.size_label = ctk.CTkLabel(
-            size_cell, text="예상: -", anchor="w", text_color=("gray40", "gray60")
-        )
-        self.size_label.pack(side="left", fill="x")
+        right.addLayout(titlebar)
+        right.addLayout(namebar)
+        right.addLayout(ctrlbar)
 
+        root.addWidget(self.index_label)
+        root.addWidget(self.thumb_label)
+        root.addLayout(right, 1)
+
+        self.ext_menu.currentIndexChanged.connect(lambda _=0: self._on_option_change())
         self._apply_defaults()
         self._initializing = False
 
-    def set_index(self, index: int):
-        self.index_label.configure(text=str(index))
+    # --------------------------------------------------------- 표시 갱신
+    def _set_pixmap(self, pixmap: QPixmap | None):
+        if pixmap is not None:
+            self.thumb_label.setPixmap(pixmap)
+        else:
+            self.thumb_label.clear()
 
-    def update_info(self, info: VideoInfo, thumb=None):
-        """재생목록으로 빠르게 추가된 뒤, 개별 조회가 끝나면 상세 정보로 갱신한다."""
+    def set_index(self, index: int):
+        self.index_label.setText(str(index))
+
+    def update_info(self, info: VideoInfo, pixmap: QPixmap | None = None):
         self.info = info
-        self.title_label.configure(text=f"{info.title}   ({info.duration_str})")
-        if thumb is not None:
-            self._thumb = thumb
-            self.thumb_label.configure(image=thumb)
-        # 영상 모드일 때만 실제 해상도 목록을 채운다(사용자가 고른 값은 보존).
-        if self.kind_menu.get() != "음원" and info.available_heights:
-            cur = self.quality_menu.get()
+        self.title_label.setText(f"{info.title}   ({info.duration_str})")
+        if pixmap is not None:
+            self._set_pixmap(pixmap)
+        if self.kind_menu.currentText() != "음원" and info.available_heights:
+            cur = self.quality_menu.currentText()
             labels = [_quality_label(h) for h in info.available_heights]
-            self.quality_menu.configure(values=labels)
-            self.quality_menu.set(cur if cur in labels else labels[0])
+            self._set_combo(self.quality_menu, labels, cur if cur in labels else labels[0])
         self._update_estimate()
 
-    # 파일명 입력창 커서 이동 편의 (Up=맨앞, Down=맨뒤)
-    def _cursor_home(self, _event=None):
-        entry = self.name_entry._entry  # 내부 tkinter.Entry
-        entry.icursor(0)
-        entry.xview_moveto(0)
-        return "break"
+    # --------------------------------------------------------- 옵션
+    @staticmethod
+    def _set_combo(combo: QComboBox, values, selected=None):
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(values)
+        if selected is not None and selected in values:
+            combo.setCurrentText(selected)
+        combo.blockSignals(False)
 
-    def _cursor_end(self, _event=None):
-        entry = self.name_entry._entry
-        entry.icursor("end")
-        entry.xview_moveto(1)
-        return "break"
-
-    def set_title_wraplength(self, wl: int):
-        """제목 줄바꿈 폭 설정. App이 리사이즈(디바운스) 시 일괄 호출한다."""
-        if self._last_wl == wl:
-            return
-        self._last_wl = wl
-        self.title_label.configure(wraplength=wl)
-
-    # 포맷 전환 시 확장자/품질 옵션 갱신
-    def _on_kind_change(self, _value=None):
-        if self.kind_menu.get() == "\uC74C\uC6D0":
+    def _on_kind_change(self, _=0):
+        if self.kind_menu.currentText() == "음원":
             self._apply_audio_options()
         else:
             self._apply_video_options()
@@ -318,69 +222,50 @@ class DownloadRow(ctk.CTkFrame):
 
     def get_defaults(self) -> dict:
         p = self.get_params()
-        return {
-            "kind": p["kind"],
-            "ext": p["ext"],
-            "quality": self.quality_menu.get(),
-        }
-
-    def _quality_values(self) -> list[str]:
-        return list(self.quality_menu.cget("values") or [])
+        return {"kind": p["kind"], "ext": p["ext"], "quality": self.quality_menu.currentText()}
 
     def _apply_defaults(self):
         kind = self._defaults.get("kind")
         if kind == "audio":
-            self.kind_menu.set("\uC74C\uC6D0")
+            self.kind_menu.setCurrentText("음원")
             self._apply_audio_options()
         else:
-            self.kind_menu.set("\uC601\uC0C1")
+            self.kind_menu.setCurrentText("영상")
             self._apply_video_options()
-
         ext = self._defaults.get("ext")
-        ext_values = AUDIO_EXTS if self.kind_menu.get() == "\uC74C\uC6D0" else VIDEO_EXTS
-        if ext in ext_values:
-            self.ext_menu.set(ext)
-
+        if ext and ext in [self.ext_menu.itemText(i) for i in range(self.ext_menu.count())]:
+            self.ext_menu.setCurrentText(ext)
         quality = self._defaults.get("quality")
-        if quality in self._quality_values():
-            self.quality_menu.set(quality)
+        if quality and quality in [self.quality_menu.itemText(i) for i in range(self.quality_menu.count())]:
+            self.quality_menu.setCurrentText(quality)
         self._update_estimate()
 
     def _apply_video_options(self):
-        self.ext_menu.configure(values=VIDEO_EXTS)
-        self.ext_menu.set(VIDEO_EXTS[0])
-        if self.info.available_heights:
-            labels = [_quality_label(h) for h in self.info.available_heights]
-        else:
-            labels = ["최고"]
-        self.quality_menu.configure(values=labels)
-        self.quality_menu.set(labels[0])
+        self._set_combo(self.ext_menu, VIDEO_EXTS, VIDEO_EXTS[0])
+        labels = [_quality_label(h) for h in self.info.available_heights] or ["최고"]
+        self._set_combo(self.quality_menu, labels, labels[0])
         self._update_estimate()
 
     def _apply_audio_options(self):
-        self.ext_menu.configure(values=AUDIO_EXTS)
-        self.ext_menu.set(AUDIO_EXTS[0])
-        self.quality_menu.configure(values=AUDIO_BITRATES)
-        self.quality_menu.set("192")
+        self._set_combo(self.ext_menu, AUDIO_EXTS, AUDIO_EXTS[0])
+        self._set_combo(self.quality_menu, AUDIO_BITRATES, "192")
         self._update_estimate()
 
     def _update_estimate(self):
         p = self.get_params()
-        size = estimate_size(
-            self.info, kind=p["kind"], max_height=p["max_height"],
-            audio_bitrate=p["audio_bitrate"],
-        )
-        self.size_label.configure(text=f"예상: {format_size(size)}")
+        size = estimate_size(self.info, kind=p["kind"], max_height=p["max_height"],
+                             audio_bitrate=p["audio_bitrate"])
+        self.size_label.setText(f"예상: {format_size(size)}")
 
-    # 현재 항목의 다운로드 파라미터 추출
+    # --------------------------------------------------------- 파라미터/상태
     def get_params(self) -> dict:
-        is_audio = self.kind_menu.get() == "음원"
-        quality = self.quality_menu.get()
+        is_audio = self.kind_menu.currentText() == "음원"
+        quality = self.quality_menu.currentText()
         params = {
             "url": self.info.url,
             "kind": "audio" if is_audio else "video",
-            "ext": self.ext_menu.get(),
-            "filename": self.name_entry.get().strip() or None,
+            "ext": self.ext_menu.currentText(),
+            "filename": self.name_entry.text().strip() or None,
             "max_height": None,
             "audio_bitrate": "192",
         }
@@ -392,364 +277,218 @@ class DownloadRow(ctk.CTkFrame):
         return params
 
     def quality_text(self) -> str:
-        return self.quality_menu.get()
+        return self.quality_menu.currentText()
 
-    def set_status(self, text: str, color=None):
-        self.status_label.configure(text=text)
-        if color:
-            self.status_label.configure(text_color=color)
+    def set_status(self, text: str, color: str | None = None):
+        self.status_label.setText(text)
+        self.status_label.setStyleSheet(f"color:{color};" if color else "color:gray;")
 
     def set_controls_enabled(self, enabled: bool):
-        state = "normal" if enabled else "disabled"
-        for w in (self.name_entry, self.ext_menu, self.kind_menu,
-                  self.quality_menu, self.remove_btn):
-            w.configure(state=state)
+        for w in (self.name_entry, self.ext_menu, self.kind_menu, self.quality_menu, self.remove_btn):
+            w.setEnabled(enabled)
 
 
-class _HistoryRow(ctk.CTkFrame):
-    """재활용되는 내역 행 위젯. bind_entry로 데이터만 갈아끼운다(RecyclerView 방식)."""
+# ---------------------------------------------------------------------------
+# 내역 패널
+# ---------------------------------------------------------------------------
+class ElidedLabel(QLabel):
+    """가로 폭을 넘으면 …으로 축약해 그리는 라벨(접힘=1줄). wordWrap을 켜면 일반 줄바꿈."""
 
-    def __init__(self, master, panel: "HistoryPanel"):
-        super().__init__(master, fg_color=("gray92", "gray18"))
+    def __init__(self, text: str = ""):
+        super().__init__(text)
+        self._full = text
+        # 가로로 sizeHint를 무시(행을 넓히지 않음 → 옆 버튼이 밀려나지 않음)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+
+    def setText(self, text: str):
+        self._full = text
+        super().setText(text)
+        self.update()
+
+    def paintEvent(self, ev):
+        if self.wordWrap():
+            super().paintEvent(ev)  # 펼침: 정상 줄바꿈
+            return
+        painter = QPainter(self)
+        fm = self.fontMetrics()
+        elided = fm.elidedText(self._full, Qt.ElideRight, self.width())
+        painter.drawText(self.rect(), int(self.alignment()) | int(Qt.AlignVCenter), elided)
+
+
+class HistoryRow(QWidget):
+    """내역 한 건. 클릭하면 펼쳐져 썸네일/메시지를 보여준다."""
+
+    def __init__(self, panel: "HistoryPanel", entry: dict):
+        super().__init__()
         self.panel = panel
-        self._eid = None
-        self._url = None
-        self._thumb_ref = None
-        wl = panel._wraplen
+        self.entry = entry
+        self.eid = entry.get("id")
+        self.url = entry.get("url")
+        self._expanded = False
+        self._item = None
 
-        self.title_lbl = ctk.CTkLabel(
-            self, anchor="w", justify="left", font=panel.item_font, wraplength=wl
-        )
-        self.title_lbl.pack(fill="x", padx=8, pady=(6, 2))
-        self.thumb_lbl = ctk.CTkLabel(self, text="")  # 펼침 시에만 pack
-        self.detail_lbl = ctk.CTkLabel(
-            self, anchor="w", justify="left", text_color=("gray40", "gray60"), wraplength=wl
-        )
-        self.detail_lbl.pack(fill="x", padx=8, pady=(0, 6))
+        v = QVBoxLayout(self)
+        v.setContentsMargins(8, 6, 8, 6)
+        v.setSpacing(3)
 
-        self.btns = ctk.CTkFrame(self, fg_color="transparent")
-        self.btns.place(relx=1.0, rely=0.0, x=-6, y=6, anchor="ne")
-        self.add_btn = ctk.CTkButton(
-            self.btns, text="＋", width=27, height=24,
-            font=ctk.CTkFont(size=15, weight="bold"), command=self._on_add,
-        )
-        self.add_btn.pack(side="left", padx=(0, 3))
-        self.del_btn = ctk.CTkButton(
-            self.btns, text="🗑", width=27, height=24,
-            fg_color="#c0392b", hover_color="#a93226", text_color="white",
-            command=self._on_del,
-        )
-        self.del_btn.pack(side="left")
+        top = QHBoxLayout()
+        self.title_lbl = ElidedLabel()
+        self.title_lbl.setWordWrap(False)  # 접힘 기본: 1줄 축약
+        top.addWidget(self.title_lbl, 1)
+        add_btn = QPushButton("＋")
+        add_btn.setFixedSize(26, 24)
+        add_btn.setToolTip("다운로드 목록에 다시 추가")
+        add_btn.clicked.connect(lambda: panel.readd(self.url))
+        del_btn = QPushButton("🗑")
+        del_btn.setFixedSize(26, 24)
+        del_btn.setStyleSheet("background:#c0392b; color:white;")
+        del_btn.setToolTip("이 내역 삭제")
+        del_btn.clicked.connect(lambda: panel.delete(self.eid))
+        top.addWidget(add_btn, 0, Qt.AlignTop)
+        top.addWidget(del_btn, 0, Qt.AlignTop)
+        v.addLayout(top)
 
-        for w in (self, self.title_lbl, self.detail_lbl, self.thumb_lbl):
-            w.bind("<Button-1>", self._on_click)
-            w.bind("<MouseWheel>", panel._on_wheel)
-        self.add_btn.bind("<MouseWheel>", panel._on_wheel)
-        self.del_btn.bind("<MouseWheel>", panel._on_wheel)
+        self.thumb_lbl = QLabel()
+        self.thumb_lbl.setVisible(False)
+        v.addWidget(self.thumb_lbl)
 
-    def _on_add(self):
-        self.panel._readd(self._url)
+        self.detail_lbl = ElidedLabel()
+        self.detail_lbl.setWordWrap(False)  # 접힘 기본: 1줄 축약
+        self.detail_lbl.setStyleSheet("color:gray;")
+        v.addWidget(self.detail_lbl)
 
-    def _on_del(self):
-        self.panel._delete(self._eid)
+        self._build_text()
 
-    def _on_click(self, _e=None):
-        self.panel._toggle_expand(self._eid)
-
-    def bind_entry(self, entry: dict, expanded: bool):
-        p = self.panel
-        self._eid = entry.get("id")
-        self._url = entry.get("url")
-        ok = entry.get("status") == "성공"
-        color = ("green", "#4caf50") if ok else ("red", "#e57373")
+    def _build_text(self):
+        e = self.entry
+        ok = e.get("status") == "성공"
+        color = "#4caf50" if ok else "#e57373"
         status_txt = "성공" if ok else "실패"
-        filename = entry.get("filename") or ""
-        title = entry.get("title", "(제목 없음)")
+        filename = e.get("filename") or ""
+        title = e.get("title", "(제목 없음)")
         has_fn = bool(filename) and filename != "(제목)"
         primary = f"[{status_txt}] " + (f"{filename} ({title})" if has_fn else title)
-        detail = (
-            f"{entry.get('timestamp', '')}  "
-            f"{entry.get('kind', '')}/{entry.get('ext', '')} {entry.get('quality', '')}"
-        )
-        msg = entry.get("message")
-        cw = p._content_w
-        first_w = cw - 84
-        arrow = "▾ " if expanded else "▸ "
-        full = arrow + primary
+        arrow = "▾ " if self._expanded else "▸ "
+        # 펼침일 때만 줄바꿈 허용(접힘은 1줄 축약)
+        self.title_lbl.setWordWrap(self._expanded)
+        self.detail_lbl.setWordWrap(self._expanded)
+        self.title_lbl.setText(arrow + primary)
+        self.title_lbl.setStyleSheet(f"color:{color};")
+        detail = (f"{e.get('timestamp', '')}  "
+                  f"{e.get('kind', '')}/{e.get('ext', '')} {e.get('quality', '')}")
+        msg = e.get("message")
+        if self._expanded and msg:
+            detail += f"\n{msg}"
+        self.detail_lbl.setText(detail)
+
+    def mousePressEvent(self, ev):
+        self.panel.toggle(self)
+        super().mousePressEvent(ev)
+
+    def set_expanded(self, expanded: bool):
+        self._expanded = expanded
+        self._build_text()
         if expanded:
-            self.title_lbl.configure(
-                text=_wrap_around(full, p._charw, first_w, cw - 4), text_color=color
-            )
-            self.detail_lbl.configure(text=detail + (f"\n{msg}" if msg else ""))
+            pm = self.panel.load_thumb(self.entry.get("thumb"))
+            self.thumb_lbl.setPixmap(pm) if pm is not None else self.thumb_lbl.clear()
+            self.thumb_lbl.setVisible(pm is not None)
         else:
-            self.title_lbl.configure(
-                text=_clamp_text(full, p._charw, first_w, 1), text_color=color
-            )
-            self.detail_lbl.configure(text=_clamp_text(detail, p._charw, cw, 1))
-
-        self.thumb_lbl.pack_forget()
-        if expanded:
-            img = p._load_thumb_image(entry.get("thumb"))
-            if img is not None:
-                self.thumb_lbl.configure(image=img)
-                self._thumb_ref = img
-                self.thumb_lbl.pack(after=self.title_lbl, padx=8, pady=2)
+            self.thumb_lbl.setVisible(False)
 
 
-class HistoryPanel(ctk.CTkFrame):
-    """다운로드 내역 사이드 패널 — 가상 스크롤(뷰 리사이클링)로 대량 내역도 빠르게."""
+class HistoryPanel(QWidget):
+    """우측 다운로드 내역 패널."""
 
-    BUFFER = 3  # 화면 위/아래 여유 행 수
+    def __init__(self, main: "MainWindow"):
+        super().__init__()
+        self.main = main
+        self._thumb_cache: dict[str, QPixmap] = {}
+        self.setMinimumWidth(300)
 
-    def __init__(self, master, app: "App", width: int = HISTORY_PANEL_WIDTH):
-        super().__init__(master, width=width)
-        self.app = app
-        self.pack_propagate(False)  # 고정 폭 유지
-        self._expanded: set[str] = set()
-        self.item_font = ctk.CTkFont(size=12)
-        self._clamp_w = 240
-        self._content_w = self._clamp_w + 20   # 제목 전체 폭(줄바꿈 계산)
-        self._wraplen = self._content_w + 12    # 라벨 wraplength
-        self._window_w = 296                    # 캔버스 창(행) 폭
-        # 폭 측정용 일반 tkinter 폰트 + 문자별 폭 캐시(CTkFont.measure는 개당 ~2ms로 매우 느림)
-        _act = self.item_font.actual()
-        self._measure_font = tkfont.Font(
-            family=_act.get("family", "Malgun Gothic"), size=_act.get("size", 12),
-        )
-        self._char_w: dict = {}
-        self._img_cache: dict = {}    # thumb 경로 -> CTkImage(중복 로드 방지)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(6, 6, 6, 6)
+        v.setSpacing(6)
 
-        # 가상 스크롤 상태
-        self._entries: list = []
-        self._offsets: list = [0]     # offsets[i]=항목 i의 시작 y, 마지막=전체 높이
-        self._total_h = 0
-        self._collapsed_h = None
-        self._exp_h: dict = {}        # eid -> 펼침 높이(측정 캐시)
-        self._pool: list = []         # 재활용 행 위젯
-        self._free: list = []         # 놀고 있는 행
-        self._winid: dict = {}        # row -> 캔버스 window id
-        self._bound: dict = {}        # 항목 index -> row
-        self._dirty = True
+        header = QHBoxLayout()
+        header.addWidget(QLabel("다운로드 내역"))
+        header.addStretch(1)
+        clear_btn = QPushButton("전체 지우기")
+        clear_btn.clicked.connect(self.clear_all)
+        header.addWidget(clear_btn)
+        v.addLayout(header)
 
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=8, pady=(8, 2))
-        ctk.CTkLabel(
-            header, text="다운로드 내역", font=ctk.CTkFont(size=14, weight="bold"),
-        ).pack(side="left")
-        ctk.CTkButton(
-            header, text="✕", width=28, fg_color="transparent",
-            text_color=("gray30", "gray70"), hover_color=("gray80", "gray30"),
-            command=self.app.toggle_history,
-        ).pack(side="right")
-
-        toolbar = ctk.CTkFrame(self, fg_color="transparent")
-        toolbar.pack(fill="x", padx=8, pady=(0, 4))
-        ctk.CTkLabel(
-            toolbar, text="항목을 클릭하면 펼쳐집니다", text_color=("gray40", "gray60"),
-        ).pack(side="left")
-        ctk.CTkButton(
-            toolbar, text="전체 지우기", width=84, command=self._clear_all
-        ).pack(side="right")
-
-        body = ctk.CTkFrame(self, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=(4, 2), pady=(2, 6))
-        bg = "#dbdbdb" if ctk.get_appearance_mode() == "Light" else "#2b2b2b"
-        self.canvas = tk.Canvas(body, highlightthickness=0, bd=0, bg=bg)
-        self.scrollbar = ctk.CTkScrollbar(body, command=self._on_scroll)
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
-        self.scrollbar.pack(side="right", fill="y")
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.canvas.bind("<Configure>", lambda e: self._refresh_visible())
-        self.canvas.bind("<MouseWheel>", self._on_wheel)
-        self._empty_id = None
-        self._measure_row = _HistoryRow(self.canvas, self)  # 높이 측정 전용(미표시)
+        self.list = QListWidget()
+        self.list.setSpacing(4)
+        v.addWidget(self.list, 1)
+        self.empty = QLabel("내역이 없습니다.")
+        self.empty.setAlignment(Qt.AlignCenter)
+        self.empty.setStyleSheet("color:gray; padding:16px;")
+        v.addWidget(self.empty)
 
         self.render()
 
-    # ---------------------------------------------------------- 유틸
-    def _charw(self, ch: str) -> int:
-        w = self._char_w.get(ch)
-        if w is None:
-            w = self._measure_font.measure(ch)
-            self._char_w[ch] = w
-        return w
+    def render(self):
+        self.list.clear()
+        entries = config.load_history()
+        self.empty.setVisible(not entries)
+        self.list.setVisible(bool(entries))
+        for e in entries:
+            row = HistoryRow(self, e)
+            item = QListWidgetItem(self.list)
+            item.setSizeHint(row.sizeHint())
+            self.list.addItem(item)
+            self.list.setItemWidget(item, row)
+            row._item = item
 
-    def _load_thumb_image(self, path):
+    def toggle(self, row: HistoryRow):
+        row.set_expanded(not row._expanded)
+        row.adjustSize()
+        if row._item is not None:
+            row._item.setSizeHint(row.sizeHint())
+
+    def load_thumb(self, path):
         if not path or not os.path.exists(path):
             return None
-        img = self._img_cache.get(path)
-        if img is None:
-            try:
-                pil = Image.open(path)
-                img = ctk.CTkImage(light_image=pil, dark_image=pil, size=(240, 135))
-                self._img_cache[path] = img
-            except Exception:
-                return None
-        return img
+        if path in self._thumb_cache:
+            return self._thumb_cache[path]
+        pm = QPixmap(path)
+        if pm.isNull():
+            return None
+        pm = pm.scaledToWidth(220, Qt.SmoothTransformation)
+        self._thumb_cache[path] = pm
+        return pm
 
-    def mark_dirty(self):
-        self._dirty = True
-
-    def render_if_dirty(self):
-        if self._dirty:
-            self.render()
-
-    # ---------------------------------------------------------- 데이터/레이아웃
-    def render(self):
-        self._dirty = False
-        self._entries = config.load_history()
-        self._recompute_offsets()
-        self._refresh_visible(force=True)
-
-    def _item_height(self, entry: dict) -> int:
-        eid = entry.get("id")
-        if eid in self._expanded:
-            h = self._exp_h.get(eid)
-            if h is None:
-                self._measure_row.bind_entry(entry, True)
-                self._measure_row.update_idletasks()
-                h = max(70, self._measure_row.winfo_reqheight())
-                self._exp_h[eid] = h
-            return h
-        if self._collapsed_h is None:
-            self._measure_row.bind_entry(entry, False)
-            self._measure_row.update_idletasks()
-            self._collapsed_h = max(40, self._measure_row.winfo_reqheight())
-        return self._collapsed_h
-
-    def _recompute_offsets(self):
-        offs = [0]
-        y = 0
-        for e in self._entries:
-            y += self._item_height(e) + 6  # 행 간 간격
-            offs.append(y)
-        self._offsets = offs
-        self._total_h = y
-        self.canvas.configure(scrollregion=(0, 0, self._window_w, max(y, 1)))
-        if not self._entries:
-            if self._empty_id is None:
-                self._empty_id = self.canvas.create_text(
-                    10, 20, text="내역이 없습니다.", anchor="nw", fill="gray")
-            self.canvas.itemconfigure(self._empty_id, state="normal")
-        elif self._empty_id is not None:
-            self.canvas.itemconfigure(self._empty_id, state="hidden")
-
-    def _refresh_visible(self, force: bool = False):
-        if not self._entries:
-            for idx in list(self._bound):
-                self._recycle(idx)
-            return
-        vh = self.canvas.winfo_height()
-        top = self.canvas.canvasy(0)
-        bottom = top + vh
-        n = len(self._entries)
-        first = max(0, bisect.bisect_right(self._offsets, top) - 1 - self.BUFFER)
-        last = min(n - 1, bisect.bisect_left(self._offsets, bottom) - 1 + self.BUFFER)
-
-        if force:
-            for idx in list(self._bound):
-                self._recycle(idx)
-        else:
-            for idx in list(self._bound):
-                if idx < first or idx > last:
-                    self._recycle(idx)
-
-        for idx in range(first, last + 1):
-            if idx in self._bound:
-                continue
-            entry = self._entries[idx]
-            row = self._get_free_row()
-            row.bind_entry(entry, entry.get("id") in self._expanded)
-            wid = self._winid[row]
-            h = self._offsets[idx + 1] - self._offsets[idx] - 6
-            self.canvas.coords(wid, 2, self._offsets[idx])
-            self.canvas.itemconfigure(wid, state="normal", width=self._window_w, height=h)
-            self._bound[idx] = row
-
-    def _get_free_row(self):
-        if self._free:
-            return self._free.pop()
-        row = _HistoryRow(self.canvas, self)
-        wid = self.canvas.create_window(2, 0, window=row, anchor="nw", state="hidden")
-        self._winid[row] = wid
-        self._pool.append(row)
-        return row
-
-    def _recycle(self, idx):
-        row = self._bound.pop(idx, None)
-        if row is not None:
-            self.canvas.itemconfigure(self._winid[row], state="hidden")
-            self._free.append(row)
-
-    # ---------------------------------------------------------- 스크롤
-    def _on_scroll(self, *args):
-        self.canvas.yview(*args)
-        self._refresh_visible()
-
-    def _on_wheel(self, event):
-        vh = self.canvas.winfo_height()
-        if self._total_h <= vh:
-            return "break"
-        step = -60 if event.delta > 0 else 60
-        top = self.canvas.canvasy(0)
-        new_top = max(0, min(top + step, self._total_h - vh))
-        self.canvas.yview_moveto(new_top / self._total_h)
-        self._refresh_visible()
-        return "break"
-
-    # ---------------------------------------------------------- 액션
-    def _toggle_expand(self, eid):
-        if not eid:
-            return
-        if eid in self._expanded:
-            self._expanded.discard(eid)
-        else:
-            self._expanded.add(eid)
-        self._recompute_offsets()  # 높이 변화 → 오프셋 재계산
-        # 보이는 행은 위치만 이동(coords, 재그리기 없음), 토글된 행만 다시 바인딩(재그리기 1행)
-        for idx, row in list(self._bound.items()):
-            wid = self._winid[row]
-            self.canvas.coords(wid, 2, self._offsets[idx])
-            if self._entries[idx].get("id") == eid:
-                h = self._offsets[idx + 1] - self._offsets[idx] - 6
-                self.canvas.itemconfigure(wid, height=h)
-                row.bind_entry(self._entries[idx], eid in self._expanded)
-        self._refresh_visible()  # 아래로 밀려난 만큼 가장자리 행 추가/회수
-
-    def _readd(self, url: str | None):
+    def readd(self, url):
         if url:
-            self.app.add_url(url)
+            self.main.add_url(url)
 
-    def _delete(self, entry_id: str | None):
-        config.delete_history(entry_id)
-        self._expanded.discard(entry_id)
-        self._exp_h.pop(entry_id, None)
+    def delete(self, eid):
+        config.delete_history(eid)
         self.render()
 
-    def _clear_all(self):
+    def clear_all(self):
         config.clear_history()
-        self._expanded.clear()
-        self._exp_h.clear()
         self.render()
 
 
-class App(ctk.CTk):
+# ---------------------------------------------------------------------------
+# 메인 창
+# ---------------------------------------------------------------------------
+class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.title(f"Y_Downloader-{__version__}")
-        self.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+        self.setWindowTitle(f"Y_Downloader  v{__version__}")
+        self.resize(880, 660)
 
+        self._bridge = _Bridge()
         self.rows: list[DownloadRow] = []
         self._downloading = False
-        self.history_panel: HistoryPanel | None = None
-        self._history_visible = False
-        self._normal_geom = None  # 패널 닫힘·비최대화 상태의 기본 창 위치/크기
-        default_dir = os.path.join(os.path.expanduser("~"), "Downloads")
-        self.download_dir = config.get_download_dir(default_dir)
-        self.item_defaults = config.get_item_defaults()
         self._add_request_id = 0
         self._add_pending = False
-        # 재생목록 항목 상세 정보 병렬 조회용 상태
+        self.download_dir = config.get_download_dir(
+            os.path.join(os.path.expanduser("~"), "Downloads"))
+        self.item_defaults = config.get_item_defaults()
+        # 재생목록 개별 조회
         self._enrich_queue: queue.Queue = queue.Queue()
         self._enrich_lock = threading.Lock()
         self._enrich_workers = 0
@@ -757,354 +496,206 @@ class App(ctk.CTk):
         self._enrich_done = 0
 
         self._build_ui()
-
-        # 지난 세션의 창 위치/크기 복원(없거나 화면 밖이면 주모니터 중앙 기본 크기)
         self._restore_geometry()
 
-        # 리사이즈는 디바운스로 한 번만 반영(이벤트 폭주로 인한 지연 방지)
-        self._resize_after = None
-        self._last_list_w = 0  # 마지막으로 반영한 목록 폭(변화 없으면 재배치 생략)
-        self._left_frozen = False
-        self.bind("<Configure>", self._on_window_configure)
-        # 닫을 때 창 상태 저장
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-
-        # 실행 시 업데이트 확인 (패키지 빌드에서만; 개발 실행은 건너뜀)
-        if updater.build_kind() != "dev":
-            self.after(1500, self._start_update_check)
-
-    # ------------------------------------------------- 창 위치/크기 기억
-    def _restore_geometry(self):
-        win = config.get_window()
-        if win and self._geometry_valid(win.get("x"), win.get("y"), win.get("w"), win.get("h")):
-            self.geometry(f"{win['w']}x{win['h']}+{win['x']}+{win['y']}")
-            self._normal_geom = (win["x"], win["y"], win["w"], win["h"])
-            if win.get("zoomed"):
-                self.after(60, lambda: self.state("zoomed"))
-        else:
-            self._center_default()
-
-    def _center_default(self):
-        """주모니터(1번) 정중앙에 기본 크기로."""
-        self.update_idletasks()
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        w, h = DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT
-        x = max(0, (sw - w) // 2)
-        y = max(0, (sh - h) // 2)
-        self.geometry(f"{w}x{h}+{x}+{y}")
-        self._normal_geom = (x, y, w, h)
-
-    def _geometry_valid(self, x, y, w, h) -> bool:
-        """저장된 창이 현재 모니터 배치 안에서 충분히 보이고 잡을 수 있는지."""
-        if None in (x, y, w, h):
-            return False
-        if w < MIN_WINDOW_WIDTH or h < MIN_WINDOW_HEIGHT:
-            return False
-        b = _virtual_screen_bounds()
-        if not b:
-            return True  # 판정 불가하면 그대로 사용
-        vx, vy, vw, vh = b
-        # 창과 가상 데스크톱의 겹침 면적이 창의 50% 이상
-        ix = max(0, min(x + w, vx + vw) - max(x, vx))
-        iy = max(0, min(y + h, vy + vh) - max(y, vy))
-        if ix * iy < 0.5 * w * h:
-            return False
-        # 타이틀바(상단)가 화면 안에 있어 드래그 가능한지
-        if y < vy or y > vy + vh - 40:
-            return False
-        return True
-
-    def _save_geometry(self):
-        try:
-            g = self._normal_geom or (
-                self.winfo_x(), self.winfo_y(), self.winfo_width(), self.winfo_height()
-            )
-            config.set_window({
-                "x": g[0], "y": g[1], "w": g[2], "h": g[3],
-                "zoomed": self.state() == "zoomed",
-            })
-        except Exception:
-            pass
-
-    def _on_close(self):
-        self._save_geometry()
-        self.destroy()
-
-    # ------------------------------------------------- 반응형(디바운스)
-    def _on_window_configure(self, event):
-        # 창 자체의 크기 변경만 처리(자식 위젯 이벤트 무시)
-        if event.widget is not self:
-            return
-        # 패널 닫힘 + 비최대화 상태의 '기본' 위치/크기를 기억(복원 기준)
-        if not self._history_visible and self.state() != "zoomed":
-            self._normal_geom = (
-                self.winfo_x(), self.winfo_y(), self.winfo_width(), self.winfo_height()
-            )
-        if self._resize_after is not None:
-            self.after_cancel(self._resize_after)
-        self._resize_after = self.after(120, self._apply_responsive_layout)
-
-    def _apply_responsive_layout(self, force: bool = False):
-        self._resize_after = None
-        if not self.rows:
-            return
-        # 목록 폭이 실제로 바뀌었을 때만 반영. 패널 토글은 목록 폭이 안 바뀌므로
-        # 여기서 걸러져 '닫은 뒤 한 박자 늦게 깜빡'이는 재그리기를 없앤다.
-        w = self.list_frame.winfo_width()
-        if not force and w == self._last_list_w:
-            return
-        self._last_list_w = w
-        # Reserve space for row number, thumbnail, remove button, scrollbar, and padding.
-        wl = max(120, w - 230)
-        for row in self.rows:
-            row.set_title_wraplength(wl)
-
-    def _update_list_header(self):
-        count = len(self.rows)
-        title = "\ub2e4\uc6b4\ub85c\ub4dc \ubaa9\ub85d" if count == 0 else f"\ub2e4\uc6b4\ub85c\ub4dc \ubaa9\ub85d ({count}\uac1c)"
-        self.list_title_label.configure(text=title)
-        if hasattr(self, "clear_list_btn"):
-            state = "disabled" if self._downloading or count == 0 else "normal"
-            self.clear_list_btn.configure(state=state)
-
-    def _renumber_rows(self):
-        for index, row in enumerate(self.rows, start=1):
-            row.set_index(index)
-
-    def _refresh_list_state(self):
-        self._update_list_header()
-        self._renumber_rows()
-
-    # ------------------------------------------------- 자동 업데이트
-    def _on_row_defaults_change(self, defaults: dict):
-        self.item_defaults = defaults
-        config.set_item_defaults(defaults)
-
-    def _start_update_check(self):
-        threading.Thread(target=self._update_check_worker, daemon=True).start()
-
-    def _update_check_worker(self):
-        try:
-            latest = updater.check_update(__version__)
-        except Exception:
-            return  # 네트워크 오류 등은 조용히 무시
-        if latest:
-            self.after(0, lambda: self._show_update_modal(latest))
-
-    def _show_update_modal(self, latest: dict):
-        newver = latest["tag"].lstrip("vV")
-        win = ctk.CTkToplevel(self)
-        win.title("업데이트")
-        win.resizable(False, False)
-        win.transient(self)
-        self._center_popup(win, 440, 400)
-
-        ctk.CTkLabel(
-            win, text="새로운 버전이 릴리즈 되었습니다.\n업데이트하시겠습니까?",
-            font=ctk.CTkFont(size=14, weight="bold"), justify="center",
-        ).pack(pady=(20, 6))
-        ctk.CTkLabel(win, text=f"현재 {__version__}    →    새 버전 {newver}").pack(pady=2)
-
-        # 변경 내용 요약
-        ctk.CTkLabel(win, text="변경 내용", anchor="w").pack(fill="x", padx=20, pady=(10, 0))
-        box = ctk.CTkTextbox(win, height=150, wrap="word")
-        box.pack(fill="both", expand=True, padx=20, pady=(2, 6))
-        box.insert("1.0", updater.extract_summary(latest.get("body", "")))
-        box.configure(state="disabled")
-
-        status = ctk.CTkLabel(win, text="", text_color=("gray40", "gray60"))
-        status.pack(pady=(0, 0))
-
-        bar = ctk.CTkFrame(win, fg_color="transparent")
-        bar.pack(pady=12)
-        later_btn = ctk.CTkButton(bar, text="나중에", width=110, fg_color="gray", hover_color="gray30")
-        later_btn.pack(side="left", padx=8)
-        ok_btn = ctk.CTkButton(bar, text="확인", width=110)
-        ok_btn.pack(side="left", padx=8)
-
-        def do_update():
-            try:
-                updater.download_and_apply(
-                    latest, updater.build_kind(),
-                    progress=lambda p: self.after(0, lambda: status.configure(text=f"다운로드 중... {p:.0f}%")),
-                )
-                self.after(0, lambda: status.configure(text="교체 후 재시작합니다..."))
-                self.after(900, self._quit_for_update)
-            except Exception as e:
-                msg = str(e)
-                self.after(0, lambda: status.configure(text=f"실패: {msg[:60]}"))
-                self.after(0, lambda: ok_btn.configure(state="normal"))
-                self.after(0, lambda: later_btn.configure(state="normal"))
-
-        def on_ok():
-            ok_btn.configure(state="disabled")
-            later_btn.configure(state="disabled")
-            status.configure(text="다운로드 준비 중...")
-            threading.Thread(target=do_update, daemon=True).start()
-
-        later_btn.configure(command=win.destroy)
-        ok_btn.configure(command=on_ok)
-        win.after(100, win.grab_set)  # 창이 뜬 뒤 모달 고정
-
-    def _quit_for_update(self):
-        # 도우미 배치가 종료를 기다리고 있으므로 앱을 닫으면 교체가 진행된다.
-        self._save_geometry()
-        self.destroy()
+    def _post(self, fn):
+        """워커 스레드 → 메인 스레드에서 fn() 실행 (app.py의 self.after(0, fn) 대응)."""
+        self._bridge.invoke.emit(fn)
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
-        # 좌우 분할: 왼쪽=메인 콘텐츠, 오른쪽=내역 패널(토글)
-        self.body = ctk.CTkFrame(self, fg_color="transparent")
-        self.body.pack(fill="both", expand=True)
+        central = QWidget()
+        self.setCentralWidget(central)
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(12, 12, 12, 8)
+        outer.setSpacing(8)
 
-        left = ctk.CTkFrame(self.body, fg_color="transparent")
-        left.pack(side="left", fill="both", expand=True)
-        self.left = left  # 패널 토글 시 폭 고정(freeze)용 참조
+        # URL 입력
+        urlbar = QHBoxLayout()
+        urlbar.addWidget(QLabel("URL:"))
+        self.url_entry = QLineEdit()
+        self.url_entry.setPlaceholderText("유튜브 영상 또는 재생목록 URL을 붙여넣으세요")
+        self.url_entry.returnPressed.connect(self.on_add)
+        urlbar.addWidget(self.url_entry, 1)
+        self.add_btn = QPushButton("목록에 추가")
+        self.add_btn.clicked.connect(self.on_add)
+        urlbar.addWidget(self.add_btn)
+        self.history_btn = QPushButton("내역")
+        self.history_btn.setCheckable(True)
+        self.history_btn.clicked.connect(self.toggle_history)
+        urlbar.addWidget(self.history_btn)
+        outer.addLayout(urlbar)
 
-        # 내역 패널 미리 생성(초기엔 숨김)
-        self.history_panel = HistoryPanel(self.body, self)
+        # 목록
+        self.list_widget = QListWidget()
+        self.list_widget.setSpacing(4)
+        outer.addWidget(self.list_widget, 1)
+        self.empty_label = QLabel("목록이 비어 있습니다. URL을 추가하세요.")
+        self.empty_label.setAlignment(Qt.AlignCenter)
+        self.empty_label.setStyleSheet("color:gray; padding:24px;")
+        outer.addWidget(self.empty_label)
 
-        # --- URL 입력 영역 ---
-        url_frame = ctk.CTkFrame(left)
-        url_frame.pack(fill="x", padx=16, pady=(16, 8))
-        url_frame.columnconfigure(0, weight=1)
+        # 저장 위치 + 중복 정책
+        dirbar = QHBoxLayout()
+        dirbar.addWidget(QLabel("저장 위치:"))
+        self.dir_entry = QLineEdit(self.download_dir)
+        dirbar.addWidget(self.dir_entry, 1)
+        browse_btn = QPushButton("변경")
+        browse_btn.clicked.connect(self.on_browse)
+        dirbar.addWidget(browse_btn)
+        open_btn = QPushButton("열기")
+        open_btn.clicked.connect(self.on_open_dir)
+        dirbar.addWidget(open_btn)
+        outer.addLayout(dirbar)
 
-        self.url_entry = ctk.CTkEntry(
-            url_frame, placeholder_text="유튜브 영상 URL을 붙여넣고 [목록에 추가]를 누르세요"
-        )
-        self.url_entry.grid(row=0, column=0, sticky="ew", padx=(8, 4), pady=8)
-        self.url_entry.bind("<Return>", lambda e: self.on_add())
+        confbar = QHBoxLayout()
+        confbar.addWidget(QLabel("파일명 중복 시:"))
+        self.conflict_menu = QComboBox()
+        self.conflict_menu.addItems([CONFLICT_LABELS[p] for p in CONFLICT_POLICIES])
+        cur = config.get_conflict_policy("number")
+        self.conflict_menu.setCurrentText(CONFLICT_LABELS.get(cur, CONFLICT_LABELS["number"]))
+        self.conflict_menu.currentIndexChanged.connect(self._on_conflict_change)
+        confbar.addWidget(self.conflict_menu)
+        confbar.addStretch(1)
+        self.clear_list_btn = QPushButton("목록 비우기")
+        self.clear_list_btn.clicked.connect(self.clear_download_list)
+        confbar.addWidget(self.clear_list_btn)
+        outer.addLayout(confbar)
 
-        self.add_btn = ctk.CTkButton(
-            url_frame, text="목록에 추가", width=110, command=self.on_add
-        )
-        self.add_btn.grid(row=0, column=1, padx=4, pady=8)
+        # 진행률 + 다운로드
+        botbar = QHBoxLayout()
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 1000)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(False)
+        botbar.addWidget(self.progress, 1)
+        self.download_btn = QPushButton("전체 다운로드")
+        self.download_btn.setFixedWidth(140)
+        self.download_btn.clicked.connect(self.on_download_all)
+        botbar.addWidget(self.download_btn)
+        outer.addLayout(botbar)
 
-        self.history_btn = ctk.CTkButton(
-            url_frame, text="다운로드 내역", width=110, command=self.toggle_history
-        )
-        self.history_btn.grid(row=0, column=2, padx=(4, 8), pady=8)
+        self.status_label = QLabel("대기 중")
+        self.status_label.setStyleSheet("color:gray;")
+        outer.addWidget(self.status_label)
 
-        # --- 목록 (스크롤 영역) ---
-        list_header = ctk.CTkFrame(left, fg_color="transparent")
-        list_header.pack(fill="x", padx=16, pady=(8, 0))
-        self.list_title_label = ctk.CTkLabel(
-            list_header, text="\ub2e4\uc6b4\ub85c\ub4dc \ubaa9\ub85d",
-            font=ctk.CTkFont(size=13, weight="bold"), anchor="w",
-        )
-        self.list_title_label.pack(side="left")
-        self.clear_list_btn = ctk.CTkButton(
-            list_header, text="\ubaa8\ub450 \uc9c0\uc6b0\uae30", width=92, height=28,
-            command=self.clear_download_list, state="disabled",
-        )
-        self.clear_list_btn.pack(side="right")
+        # 우측 내역 패널(도크) — 처음엔 숨김
+        self.history_panel = HistoryPanel(self)
+        self.history_dock = QDockWidget("내역", self)
+        self.history_dock.setWidget(self.history_panel)
+        # 버튼으로만 토글되도록 고정(닫기/이동/플로팅 비활성) + 자체 헤더가 있으니 도크 타이틀바 숨김
+        self.history_dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
+        self.history_dock.setTitleBarWidget(QWidget())
+        self.addDockWidget(Qt.RightDockWidgetArea, self.history_dock)
+        self.history_dock.hide()
+        self.history_dock.visibilityChanged.connect(
+            lambda vis: self.history_btn.setChecked(vis))
 
-        self.list_frame = ctk.CTkScrollableFrame(left, label_text="")
-        self.list_frame.pack(fill="both", expand=True, padx=16, pady=(4, 8))
+        self._refresh_empty()
 
-        self.empty_label = ctk.CTkLabel(
-            self.list_frame, text="목록이 비어 있습니다. URL을 추가하세요.",
-            text_color=("gray50", "gray50"),
-        )
-        self.empty_label.pack(pady=40)
+        # 패키지 빌드에서만 실행 시 업데이트 확인(개발 소스 실행은 건너뜀)
+        if updater.build_kind() != "dev":
+            QTimer.singleShot(1500, self._start_update_check)
 
-        # --- 저장 위치 (일괄) ---
-        dir_frame = ctk.CTkFrame(left)
-        dir_frame.pack(fill="x", padx=16, pady=8)
-        dir_frame.columnconfigure(1, weight=1)
+    def _set_status(self, text: str):
+        self.status_label.setText(text)
 
-        ctk.CTkLabel(dir_frame, text="저장 위치 (공통):").grid(row=0, column=0, padx=(8, 4), pady=8)
-        self.dir_entry = ctk.CTkEntry(dir_frame)
-        self.dir_entry.insert(0, self.download_dir)
-        self.dir_entry.grid(row=0, column=1, sticky="ew", padx=4, pady=8)
-        ctk.CTkButton(dir_frame, text="변경", width=64, command=self.on_browse).grid(
-            row=0, column=2, padx=(4, 2), pady=8
-        )
-        ctk.CTkButton(dir_frame, text="열기", width=64, command=self.on_open_dir).grid(
-            row=0, column=3, padx=(2, 8), pady=8
-        )
+    def _set_progress(self, frac: float):
+        self.progress.setValue(int(max(0.0, min(1.0, frac)) * 1000))
 
-        # 파일명 중복 시 처리 정책
-        ctk.CTkLabel(dir_frame, text="파일명 중복 시:").grid(
-            row=1, column=0, padx=(8, 4), pady=(0, 8), sticky="w"
-        )
-        cur_policy = config.get_conflict_policy("number")
-        if cur_policy not in CONFLICT_POLICIES:
-            cur_policy = "number"
-        self.conflict_menu = ctk.CTkOptionMenu(
-            dir_frame, values=[CONFLICT_LABELS[p] for p in CONFLICT_POLICIES],
-            width=130, dynamic_resizing=False, command=self._on_conflict_change,
-        )
-        self.conflict_menu.set(CONFLICT_LABELS[cur_policy])
-        self.conflict_menu.grid(row=1, column=1, padx=4, pady=(0, 8), sticky="w")
+    def _refresh_empty(self):
+        has = bool(self.rows)
+        self.empty_label.setVisible(not has)
+        self.list_widget.setVisible(has)
 
-        # --- 다운로드 버튼 + 진행률 ---
-        bottom = ctk.CTkFrame(left, fg_color="transparent")
-        bottom.pack(fill="x", padx=16, pady=(4, 12))
-        bottom.columnconfigure(0, weight=1)
+    def _renumber(self):
+        for i, row in enumerate(self.rows, start=1):
+            row.set_index(i)
 
-        self.progress = ctk.CTkProgressBar(bottom)
-        self.progress.set(0)
-        self.progress.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+    def _add_row_widget(self, row: DownloadRow):
+        item = QListWidgetItem(self.list_widget)
+        item.setSizeHint(row.sizeHint())
+        self.list_widget.addItem(item)
+        self.list_widget.setItemWidget(item, row)
+        row._item = item  # 삭제 시 역참조
+        self.rows.append(row)
+        self._refresh_empty()
+        self._renumber()
 
-        self.download_btn = ctk.CTkButton(
-            bottom, text="전체 다운로드", width=140, height=36, command=self.on_download_all
-        )
-        self.download_btn.grid(row=0, column=1)
-
-        self.status_label = ctk.CTkLabel(left, text="대기 중", anchor="w")
-        self.status_label.pack(fill="x", padx=16, pady=(0, 8))
-
-    # ------------------------------------------------------ 이벤트 핸들러
+    # ------------------------------------------------------ 추가(단일/재생목록)
     def on_add(self):
-        url = self.url_entry.get().strip()
+        url = self.url_entry.text().strip()
         if not url:
             self._set_status("URL을 입력하세요.")
             return
-        self.url_entry.delete(0, "end")
+        self.url_entry.clear()
         self.add_url(url)
 
     def add_url(self, url: str):
-        """URL\uc744 \ucd94\uac00\ud55c\ub2e4. \uc7ac\uc0dd\ubaa9\ub85d URL\uc774\uba74 \ubaa9\ub85d \uc804\uccb4 \ucd94\uac00 \ud750\ub984\uc73c\ub85c, \uc544\ub2c8\uba74 \ub2e8\uc77c \ucd94\uac00\ub85c."""
         if is_playlist_url(url):
             self._start_playlist_add(url)
         else:
             self._start_single_add(url)
 
     def _start_single_add(self, url: str):
-        """\ub2e8\uc77c \uc601\uc0c1 URL\uc744 \ubc31\uadf8\ub77c\uc6b4\ub4dc\ub85c \uc870\ud68c\ud574 \ucd94\uac00\ud55c\ub2e4."""
         self._add_request_id += 1
         request_id = self._add_request_id
         self._add_pending = True
-        self.add_btn.configure(state="disabled", text="\uc870\ud68c \uc911...")
-        self._set_status(f"\uc601\uc0c1 \uc815\ubcf4\ub97c \uc870\ud68c\ud558\ub294 \uc911... {url}")
-        self.after(INFO_FETCH_TIMEOUT_SEC * 1000, lambda rid=request_id: self._on_add_timeout(rid))
+        self.add_btn.setEnabled(False)
+        self.add_btn.setText("조회 중...")
+        self._set_status(f"영상 정보를 조회하는 중... {url}")
         threading.Thread(target=self._add_worker, args=(url, request_id), daemon=True).start()
 
-    # ------------------------------------------------------ \uc7ac\uc0dd\ubaa9\ub85d \ucd94\uac00
+    def _add_worker(self, url: str, request_id: int):
+        try:
+            info = fetch_info(url, timeout=INFO_FETCH_TIMEOUT_SEC)
+            data = _fetch_thumb_bytes(info.thumbnail_url)
+            self._post(lambda: self._on_add_done(info, data, request_id))
+        except Exception as e:
+            self._post(lambda e=e: self._on_add_error(e, request_id))
+
+    def _finish_add_request(self):
+        self._add_pending = False
+        self.add_btn.setEnabled(True)
+        self.add_btn.setText("목록에 추가")
+
+    def _on_add_done(self, info: VideoInfo, thumb_data, request_id: int):
+        if request_id != self._add_request_id:
+            return
+        self._finish_add_request()
+        row = DownloadRow(info, _pixmap_from_bytes(thumb_data), self._remove_row,
+                          defaults=self.item_defaults, on_defaults_change=self._on_row_defaults_change)
+        self._add_row_widget(row)
+        self._set_status(f"추가됨: {info.title}  (총 {len(self.rows)}개)")
+
+    def _on_add_error(self, err: Exception, request_id: int):
+        if request_id != self._add_request_id:
+            return
+        self._finish_add_request()
+        self._set_status(f"조회 실패: {err}")
+
+    # 재생목록
     def _start_playlist_add(self, url: str):
-        """\uc7ac\uc0dd\ubaa9\ub85d URL\uc744 \ud3c9\uba74 \uc870\ud68c\ud574 \uac1c\uc218 \ud655\uc778 \ud6c4 \ub300\uae30\uc5f4\uc5d0 \ucd94\uac00\ud55c\ub2e4."""
-        self.add_btn.configure(state="disabled", text="\uc7ac\uc0dd\ubaa9\ub85d \ud655\uc778...")
-        self._set_status("\uc7ac\uc0dd\ubaa9\ub85d\uc744 \ud655\uc778\ud558\ub294 \uc911...")
+        self.add_btn.setEnabled(False)
+        self.add_btn.setText("재생목록 확인...")
+        self._set_status("재생목록을 확인하는 중...")
         threading.Thread(target=self._playlist_worker, args=(url,), daemon=True).start()
 
     def _playlist_worker(self, url: str):
         try:
             result = fetch_playlist(url)
         except Exception as e:
-            self.after(0, lambda e=e: self._on_playlist_error(e, url))
+            self._post(lambda e=e: self._on_playlist_error(e, url))
             return
-        self.after(0, lambda: self._on_playlist_fetched(url, result))
+        self._post(lambda: self._on_playlist_fetched(url, result))
 
     def _on_playlist_error(self, err: Exception, url: str):
-        # \uc7ac\uc0dd\ubaa9\ub85d \uc870\ud68c \uc2e4\ud328 \uc2dc \ub2e8\uc77c \uc601\uc0c1\uc73c\ub85c\ub77c\ub3c4 \uc2dc\ub3c4
-        self.add_btn.configure(state="normal", text="\ubaa9\ub85d\uc5d0 \ucd94\uac00")
-        self._set_status(f"\uc7ac\uc0dd\ubaa9\ub85d \uc870\ud68c \uc2e4\ud328, \ub2e8\uc77c \uc601\uc0c1\uc73c\ub85c \uc2dc\ub3c4: {err}")
+        self._finish_add_request()
+        self._set_status(f"재생목록 조회 실패, 단일 영상으로 시도: {err}")
         self._start_single_add(url)
 
     def _on_playlist_fetched(self, url: str, result):
-        self.add_btn.configure(state="normal", text="\ubaa9\ub85d\uc5d0 \ucd94\uac00")
-        # \uc7ac\uc0dd\ubaa9\ub85d\uc774 \uc544\ub2c8\uc5c8\uac70\ub098 \ud56d\ubaa9\uc774 \uc5c6\uc73c\uba74 \ub2e8\uc77c \uc601\uc0c1\uc73c\ub85c \ucc98\ub9ac
+        self._finish_add_request()
         if not result:
             self._start_single_add(url)
             return
@@ -1112,80 +703,39 @@ class App(ctk.CTk):
         if len(entries) == 1:
             self._start_single_add(entries[0].url)
             return
-        # \uac1c\uc218 \ud655\uc778 \ubaa8\ub2ec (watch URL\uc774\uba74 '\uc774 \uc601\uc0c1\ub9cc' \uc120\ud0dd\uc9c0 \uc81c\uacf5)
         has_single = "v=" in url.lower()
-        self._show_playlist_modal(title, entries, url, has_single)
-
-    def _show_playlist_modal(self, title, entries, url, has_single):
-        win = ctk.CTkToplevel(self)
-        win.title("\uc7ac\uc0dd\ubaa9\ub85d \ucd94\uac00")
-        win.resizable(False, False)
-        win.transient(self)
-        self._center_popup(win, 420, 220)
-
-        ctk.CTkLabel(
-            win, text="\uc7ac\uc0dd\ubaa9\ub85d\uc744 \uac10\uc9c0\ud588\uc2b5\ub2c8\ub2e4.",
-            font=ctk.CTkFont(size=14, weight="bold"),
-        ).pack(pady=(22, 6))
-        name = title if len(title) <= 34 else title[:33] + "\u2026"
-        ctk.CTkLabel(win, text=f"'{name}'").pack(pady=(0, 2))
-        ctk.CTkLabel(
-            win, text=f"\uc601\uc0c1 {len(entries)}\uac1c\uac00 \uc788\uc2b5\ub2c8\ub2e4. \ubaa8\ub450 \ub300\uae30\uc5f4\uc5d0 \ucd94\uac00\ud560\uae4c\uc694?",
-        ).pack(pady=(0, 4))
-
-        bar = ctk.CTkFrame(win, fg_color="transparent")
-        bar.pack(pady=16)
-        ctk.CTkButton(
-            bar, text="\ucde8\uc18c", width=96, fg_color="gray", hover_color="gray30",
-            command=win.destroy,
-        ).pack(side="left", padx=6)
-        if has_single:
-            ctk.CTkButton(
-                bar, text="\uc774 \uc601\uc0c1\ub9cc", width=110,
-                fg_color=("gray70", "gray40"), hover_color=("gray60", "gray50"),
-                command=lambda: (win.destroy(), self._start_single_add(url)),
-            ).pack(side="left", padx=6)
-        ctk.CTkButton(
-            bar, text=f"\ubaa8\ub450 \ucd94\uac00 ({len(entries)})", width=130,
-            command=lambda: (win.destroy(), self._add_playlist_entries(entries)),
-        ).pack(side="left", padx=6)
-        win.after(100, win.grab_set)  # \ubaa8\ub2ec \uace0\uc815
+        name = title if len(title) <= 34 else title[:33] + "…"
+        box = QMessageBox(self)
+        box.setWindowTitle("재생목록 추가")
+        box.setText(f"재생목록을 감지했습니다.\n\n'{name}'\n영상 {len(entries)}개가 있습니다. 모두 대기열에 추가할까요?")
+        add_all = box.addButton(f"모두 추가 ({len(entries)})", QMessageBox.AcceptRole)
+        single = box.addButton("이 영상만", QMessageBox.ActionRole) if has_single else None
+        box.addButton("취소", QMessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is add_all:
+            self._add_playlist_entries(entries)
+        elif single is not None and clicked is single:
+            self._start_single_add(url)
 
     def _add_playlist_entries(self, entries):
-        """\ud56d\ubaa9\ub4e4\uc744 \uc81c\ubaa9\ub9cc\uc73c\ub85c \uc989\uc2dc \ucd94\uac00\ud558\uace0, \uc0c1\uc138 \uc815\ubcf4\ub294 \ubc31\uadf8\ub77c\uc6b4\ub4dc\ub85c \uac1c\ubcc4 \uc870\ud68c\ud55c\ub2e4."""
-        if self.empty_label.winfo_exists():
-            self.empty_label.pack_forget()
         new_rows = []
         for e in entries:
-            info = VideoInfo(
-                url=e.url, title=e.title, thumbnail_url="",
-                duration=e.duration, uploader="",
-                available_heights=[], video_size_by_height={}, best_audio_size=0,
-            )
-            row = DownloadRow(
-                self.list_frame, info, None, self._remove_row,
-                defaults=self.item_defaults,
-                on_defaults_change=self._on_row_defaults_change,
-            )
-            row.pack(fill="x", padx=4, pady=4)
-            self.rows.append(row)
+            info = VideoInfo(url=e.url, title=e.title, thumbnail_url="", duration=e.duration,
+                             uploader="", available_heights=[], video_size_by_height={}, best_audio_size=0)
+            row = DownloadRow(info, None, self._remove_row, defaults=self.item_defaults,
+                              on_defaults_change=self._on_row_defaults_change)
+            self._add_row_widget(row)
             new_rows.append(row)
-        self._refresh_list_state()
-        self.after(30, lambda: self._apply_responsive_layout(force=True))
         self._enqueue_enrichment(new_rows)
 
     def _enqueue_enrichment(self, rows):
-        """\ud589\ub4e4\uc744 \uc870\ud68c \ud050\uc5d0 \ub123\uace0 \ubd80\uc871\ud55c \ub9cc\ud07c \uc6cc\ucee4 \uc2a4\ub808\ub4dc\ub97c \ub744\uc6b4\ub2e4."""
         for row in rows:
             self._enrich_queue.put(row)
         self._enrich_pending += len(rows)
-        self._set_status(
-            f"\uc7ac\uc0dd\ubaa9\ub85d {len(rows)}\uac1c \ucd94\uac00\ub428. \uc0c1\uc138 \uc815\ubcf4 \uc870\ud68c \uc911... "
-            f"(0/{self._enrich_pending})"
-        )
+        self._set_status(f"재생목록 {len(rows)}개 추가됨. 상세 정보 조회 중... (0/{self._enrich_pending})")
         with self._enrich_lock:
-            while (self._enrich_workers < ENRICH_CONCURRENCY
-                   and not self._enrich_queue.empty()):
+            while self._enrich_workers < ENRICH_CONCURRENCY and not self._enrich_queue.empty():
                 self._enrich_workers += 1
                 threading.Thread(target=self._enrich_worker, daemon=True).start()
 
@@ -1195,255 +745,128 @@ class App(ctk.CTk):
                 row = self._enrich_queue.get_nowait()
             except queue.Empty:
                 break
-            try:
-                exists = bool(row.winfo_exists())
-            except Exception:
-                exists = False
-            if not exists:
-                self.after(0, self._enrich_one_done)  # \uc0ad\uc81c\ub41c \ud589\ub3c4 \uce74\uc6b4\ud2b8\ub294 \uc815\ub9ac
-                continue
-            info = thumb = None
+            info = data = None
             try:
                 info = fetch_info(row.info.url, timeout=INFO_FETCH_TIMEOUT_SEC)
-                thumb = self._load_thumbnail(info.thumbnail_url)
+                data = _fetch_thumb_bytes(info.thumbnail_url)
             except Exception:
                 pass
-            self.after(0, lambda r=row, i=info, t=thumb: self._apply_enrichment(r, i, t))
+            self._post(lambda r=row, i=info, d=data: self._apply_enrichment(r, i, d))
         with self._enrich_lock:
             self._enrich_workers -= 1
 
-    def _apply_enrichment(self, row, info, thumb):
-        if info is not None:
-            try:
-                if row.winfo_exists():
-                    row.update_info(info, thumb)
-            except Exception:
-                pass
+    def _apply_enrichment(self, row, info, thumb_data):
+        if info is not None and row in self.rows:
+            row.update_info(info, _pixmap_from_bytes(thumb_data))
+            if hasattr(row, "_item"):
+                row._item.setSizeHint(row.sizeHint())
         self._enrich_one_done()
 
     def _enrich_one_done(self):
         self._enrich_done += 1
         total = self._enrich_pending
         if self._enrich_done >= total:
-            self._set_status(f"\uc7ac\uc0dd\ubaa9\ub85d \uc0c1\uc138 \uc815\ubcf4 \uc870\ud68c \uc644\ub8cc  (\ucd1d {len(self.rows)}\uac1c)")
+            self._set_status(f"재생목록 상세 정보 조회 완료  (총 {len(self.rows)}개)")
             self._enrich_pending = self._enrich_done = 0
         else:
-            self._set_status(f"\uc0c1\uc138 \uc815\ubcf4 \uc870\ud68c \uc911... ({self._enrich_done}/{total})")
+            self._set_status(f"상세 정보 조회 중... ({self._enrich_done}/{total})")
 
-    def _add_worker(self, url: str, request_id: int):
-        try:
-            info = fetch_info(url, timeout=INFO_FETCH_TIMEOUT_SEC)
-            thumb = self._load_thumbnail(info.thumbnail_url)
-            self.after(0, lambda: self._on_add_done(info, thumb, request_id))
-        except Exception as e:
-            self.after(0, lambda e=e: self._on_add_error(e, request_id))
+    # ------------------------------------------------------ 목록 편집
+    def _on_row_defaults_change(self, defaults: dict):
+        self.item_defaults = defaults
+        config.set_item_defaults(defaults)
 
-    def _is_current_add_request(self, request_id: int) -> bool:
-        return self._add_pending and request_id == self._add_request_id
-
-    def _finish_add_request(self):
-        self._add_pending = False
-        self.add_btn.configure(state="normal", text="\ubaa9\ub85d\uc5d0 \ucd94\uac00")
-
-    def _on_add_timeout(self, request_id: int):
-        if not self._is_current_add_request(request_id):
+    def _remove_row(self, row: DownloadRow):
+        if self._downloading or row not in self.rows:
             return
-        self._finish_add_request()
-        self._set_status(f"\uc870\ud68c \uc2dc\uac04 \ucd08\uacfc: {INFO_FETCH_TIMEOUT_SEC}\ucd08 \uc548\uc5d0 \uc751\ub2f5\ud558\uc9c0 \uc54a\uc558\uc2b5\ub2c8\ub2e4.")
-
-    def _on_add_done(self, info: VideoInfo, thumb, request_id: int):
-        if not self._is_current_add_request(request_id):
-            return
-        self._finish_add_request()
-        if self.empty_label.winfo_exists():
-            self.empty_label.pack_forget()
-        row = DownloadRow(
-            self.list_frame, info, thumb, self._remove_row,
-            defaults=self.item_defaults,
-            on_defaults_change=self._on_row_defaults_change,
-        )
-        row.pack(fill="x", padx=4, pady=4)
-        self.rows.append(row)
-        self._refresh_list_state()
-        self.add_btn.configure(state="normal", text="목록에 추가")
-        self._set_status(f"추가됨: {info.title}  (총 {len(self.rows)}개)")
-        self.after(30, lambda: self._apply_responsive_layout(force=True))  # 새 행 줄바꿈 폭 반영
-
-    def _on_add_error(self, err: Exception, request_id: int):
-        if not self._is_current_add_request(request_id):
-            return
-        self._finish_add_request()
-        self._set_status(f"\uc870\ud68c \uc2e4\ud328: {err}")
+        item = getattr(row, "_item", None)
+        if item is not None:
+            self.list_widget.takeItem(self.list_widget.row(item))
+        self.rows.remove(row)
+        row.deleteLater()
+        self._refresh_empty()
+        self._renumber()
+        self._set_status(f"삭제됨  (총 {len(self.rows)}개)")
 
     def clear_download_list(self):
         if self._downloading or not self.rows:
             return
-        for row in list(self.rows):
-            row.destroy()
+        self.list_widget.clear()
+        for row in self.rows:
+            row.deleteLater()
         self.rows.clear()
-        if self.empty_label.winfo_exists():
-            self.empty_label.pack(pady=40)
-        self._refresh_list_state()
-        self._set_status("\ubaa9\ub85d\uc744 \ubaa8\ub450 \uc9c0\uc6e0\uc2b5\ub2c8\ub2e4.")
+        self._refresh_empty()
+        self._set_status("목록을 모두 지웠습니다.")
 
-    def _remove_row(self, row: DownloadRow):
-        if self._downloading:
-            return
-        row.destroy()
-        self.rows.remove(row)
-        if not self.rows:
-            self.empty_label.pack(pady=40)
-        self._refresh_list_state()
-        self._set_status(f"삭제됨  (총 {len(self.rows)}개)")
-
+    # ------------------------------------------------------ 저장 위치/정책
     def on_browse(self):
-        path = filedialog.askdirectory(initialdir=self.dir_entry.get() or self.download_dir)
+        path = QFileDialog.getExistingDirectory(self, "저장 위치 선택",
+                                                self.dir_entry.text() or self.download_dir)
         if path:
-            self.dir_entry.delete(0, "end")
-            self.dir_entry.insert(0, path)
+            self.dir_entry.setText(path)
             self.download_dir = path
-            config.set_download_dir(path)  # 선택한 위치 기억
+            config.set_download_dir(path)
 
     def on_open_dir(self):
-        """저장 위치 폴더를 탐색기로 연다. 없으면 생성 후 연다."""
-        path = self.dir_entry.get().strip() or self.download_dir
+        path = self.dir_entry.text().strip() or self.download_dir
         try:
             os.makedirs(path, exist_ok=True)
-            os.startfile(path)  # Windows 탐색기로 열기
+            os.startfile(path)
         except Exception as e:
             self._set_status(f"폴더 열기 실패: {e}")
 
-    def _on_conflict_change(self, _label=None):
+    def _on_conflict_change(self, _=0):
         config.set_conflict_policy(self._conflict_policy())
 
     def _conflict_policy(self) -> str:
-        label = self.conflict_menu.get()
+        label = self.conflict_menu.currentText()
         for value, lbl in CONFLICT_LABELS.items():
             if lbl == label:
                 return value
         return "number"
 
-    def toggle_history(self):
-        """
-        우측 내역 패널을 열고 닫는다.
-        창을 넓히는 동안 왼쪽 콘텐츠 폭을 고정(freeze)해, 늘어난 폭이 오른쪽 패널 자리에만
-        가고 왼쪽 행들은 크기 변화가 없어 다시 그려지지 않게 한다(전체 UI 재그리기 방지).
-        """
-        if self._history_visible:
-            self.history_panel.pack_forget()
-            if self._left_frozen:
-                # 창을 좁힌 뒤, 실제로 좁아진 것을 확인하고 unfreeze(그전에 풀면 왼쪽이
-                # 넓게 늘었다 줄며 깜빡이므로 폭이 목표에 도달할 때까지 기다린다)
-                target_w = self._grow_window(-1)
-                self._schedule_unfreeze(target_w, 40)
-            else:
-                self._grow_window(-1)
-            self._history_visible = False
-        else:
-            self.history_panel.render_if_dirty()
-            if self.state() != "zoomed":  # 최대화면 창을 못 넓히므로 freeze하지 않음
-                self._freeze_left()
-                self._grow_window(+1)
-            self.history_panel.pack(side="right", fill="y", padx=(0, 8), pady=8)
-            self._history_visible = True
-
-    def _freeze_left(self):
-        """왼쪽 콘텐츠를 현재 크기로 고정(폭 변화로 인한 재그리기 방지)."""
-        self.left.update_idletasks()
-        self.left.configure(width=self.left.winfo_width(), height=self.left.winfo_height())
-        self.left.pack_propagate(False)
-        self.left.pack_configure(expand=False, fill="y")
-        self._left_frozen = True
-
-    def _unfreeze_left(self):
-        """왼쪽 콘텐츠 고정 해제(창 크기에 다시 맞춰 늘고 줄어들게)."""
-        if not self._left_frozen:
-            return
-        self.left.pack_propagate(True)
-        self.left.pack_configure(expand=True, fill="both")
-        self._left_frozen = False
-
-    def _schedule_unfreeze(self, target_w: int, attempts: int):
-        if attempts <= 0 or self.winfo_width() <= target_w + 4:
-            self._unfreeze_left()
-        else:
-            self.after(15, lambda: self._schedule_unfreeze(target_w, attempts - 1))
-
-    def _grow_window(self, sign: int):
-        """
-        내역 패널 폭만큼 창 폭을 넓히거나(+1) 줄인다(-1).
-        최대화(zoomed) 상태면 창을 바꾸지 않아 목록이 패널과 공간을 나눈다.
-        update_idletasks를 호출하지 않아, geometry 변경과 pack이 한 번의 레이아웃으로 합쳐진다.
-        경계 판단은 주모니터가 아니라 '가상 데스크톱(모든 모니터)' 기준 — 보조 모니터에서
-        창이 주모니터로 튀는 문제 방지.
-        """
-        if self.state() == "zoomed":
-            return self.winfo_width()
-        delta = (HISTORY_PANEL_WIDTH + HISTORY_PANEL_GAP) * sign
-        w, h = self.winfo_width(), self.winfo_height()
-        x, y = self.winfo_x(), self.winfo_y()
-        b = _virtual_screen_bounds()
-        if b:
-            vx, vy, vw, vh = b
-            left_bound, right_bound = vx, vx + vw
-        else:
-            left_bound, right_bound = 0, self.winfo_screenwidth()
-        if sign > 0:
-            new_w = min(w + delta, right_bound - left_bound)
-            if x + new_w > right_bound:          # 가상 데스크톱 오른쪽 밖으로 나갈 때만 안쪽으로 당김
-                x = max(left_bound, right_bound - new_w)
-        else:
-            new_w = max(MIN_WINDOW_WIDTH, w + delta)
-        self.geometry(f"{new_w}x{h}+{x}+{y}")
-        return new_w
-
+    # ------------------------------------------------------ 다운로드
     def on_download_all(self):
         if self._downloading:
             return
         if not self.rows:
             self._set_status("목록이 비어 있습니다.")
             return
-        out_dir = self.dir_entry.get().strip()
+        out_dir = self.dir_entry.text().strip()
         if not out_dir:
             self._set_status("저장 위치를 선택하세요.")
             return
-        config.set_download_dir(out_dir)  # 다운로드 시점의 위치도 기억
+        config.set_download_dir(out_dir)
 
         self._downloading = True
-        self.download_btn.configure(state="disabled", text="다운로드 중...")
-        self.add_btn.configure(state="disabled")
-        self.clear_list_btn.configure(state="disabled")
+        self.download_btn.setEnabled(False)
+        self.download_btn.setText("다운로드 중...")
+        self.add_btn.setEnabled(False)
+        self.clear_list_btn.setEnabled(False)
         for row in self.rows:
             row.set_controls_enabled(False)
-            row.set_status("대기", color=("gray40", "gray60"))
+            row.set_status("대기", "gray")
 
-        # 각 항목의 정보를 미리 추출(스레드에서 위젯 접근 방지)
         policy = self._conflict_policy()
-        jobs = [
-            {
-                "row": row,
-                "params": {**row.get_params(), "on_conflict": policy},
-                "title": row.info.title,
-                "quality": row.quality_text(),
-                "thumb_url": row.info.thumbnail_url,
-            }
-            for row in self.rows
-        ]
-        threading.Thread(
-            target=self._download_all_worker, args=(jobs, out_dir), daemon=True
-        ).start()
+        jobs = [{
+            "row": row,
+            "params": {**row.get_params(), "on_conflict": policy},
+            "title": row.info.title,
+            "quality": row.quality_text(),
+            "thumb_url": row.info.thumbnail_url,
+        } for row in self.rows]
+        threading.Thread(target=self._download_all_worker, args=(jobs, out_dir), daemon=True).start()
 
     def _download_all_worker(self, jobs, out_dir):
         total = len(jobs)
         success = 0
         for idx, job in enumerate(jobs, start=1):
             row, params = job["row"], job["params"]
-            self.after(0, lambda r=row: r.set_status("다운로드 중...", color=("#1f6aa5", "#5aa0d6")))
-            self.after(0, lambda i=idx: self._set_status(f"[{i}/{total}] 다운로드 중..."))
-            self.after(0, lambda: self.progress.set((idx - 1) / total))
+            self._post(lambda r=row: r.set_status("다운로드 중...", "#3d8fd6"))
+            self._post(lambda i=idx: self._set_status(f"[{i}/{total}] 다운로드 중..."))
+            self._post(lambda i=idx: self._set_progress((i - 1) / total))
 
-            status, message = "성공", ""
-            saved_name = None  # 실제 저장된 파일명(자동 번호 '(1)' 등 반영)
+            status, message, saved_name = "성공", "", None
             try:
                 def hook(d, r=row, i=idx):
                     self._item_progress(d, r, i, total)
@@ -1452,42 +875,44 @@ class App(ctk.CTk):
                 saved_name = os.path.splitext(os.path.basename(result.path))[0]
                 if result.status == "skipped":
                     message = "이미 있어 건너뜀"
-                    self.after(0, lambda r=row: r.set_status("건너뜀", color=("gray50", "gray60")))
+                    self._post(lambda r=row: r.set_status("건너뜀", "gray"))
                 elif result.status == "overwritten":
                     message = "덮어씀"
-                    self.after(0, lambda r=row: r.set_status("완료(덮어씀) ✓", color=("green", "#4caf50")))
+                    self._post(lambda r=row: r.set_status("완료(덮어씀) ✓", "#4caf50"))
                 else:
-                    self.after(0, lambda r=row: r.set_status("완료 ✓", color=("green", "#4caf50")))
+                    self._post(lambda r=row: r.set_status("완료 ✓", "#4caf50"))
             except Exception as e:
                 status, message = "실패", str(e)
-                self.after(0, lambda r=row, m=message: r.set_status("실패", color=("red", "#e57373")))
-                self.after(0, lambda m=message: self._set_status(f"실패: {m}"))
-
-            # 내역 기록 (성공/실패 모두) — 실제 저장 파일명 사용
+                self._post(lambda r=row: r.set_status("실패", "#e57373"))
+                self._post(lambda m=message: self._set_status(f"실패: {m}"))
             self._record_history(job, params, status, message, saved_name)
+        self._post(lambda: self._on_all_done(success, total))
 
-        self.after(0, lambda: self._on_all_done(success, total))
+    def _item_progress(self, d: dict, row: DownloadRow, idx: int, total: int):
+        if d.get("status") == "downloading":
+            tb = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            db = d.get("downloaded_bytes", 0)
+            if tb:
+                frac = db / tb
+                self._post(lambda: row.set_status(f"{frac*100:.0f}%", "#3d8fd6"))
+                self._post(lambda: self._set_progress(((idx - 1) + frac) / total))
+        elif d.get("status") == "finished":
+            self._post(lambda: row.set_status("변환 중...", "#3d8fd6"))
 
     def _record_history(self, job, params, status, message, saved_name=None):
         eid = uuid.uuid4().hex
         thumb = self._save_thumb(eid, job.get("thumb_url"))
         entry = {
-            "id": eid,
-            "url": params["url"],
-            "title": job["title"],
+            "id": eid, "url": params["url"], "title": job["title"],
             "filename": saved_name or params["filename"] or "(제목)",
             "kind": "음원" if params["kind"] == "audio" else "영상",
-            "ext": params["ext"],
-            "quality": job["quality"],
-            "status": status,
-            "message": message[:120],
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "thumb": thumb,
+            "ext": params["ext"], "quality": job["quality"],
+            "status": status, "message": message[:120],
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"), "thumb": thumb,
         }
         config.add_history(entry)
 
     def _save_thumb(self, eid: str, url: str | None) -> str | None:
-        """썸네일을 내려받아 thumbs/{eid}.jpg로 저장하고 경로를 반환(실패 시 None)."""
         if not url:
             return None
         try:
@@ -1499,61 +924,125 @@ class App(ctk.CTk):
         except Exception:
             return None
 
-    def _item_progress(self, d: dict, row: DownloadRow, idx: int, total: int):
-        if d.get("status") == "downloading":
-            tb = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
-            db = d.get("downloaded_bytes", 0)
-            if tb:
-                frac = db / tb
-                self.after(0, lambda: row.set_status(f"{frac*100:.0f}%", color=("#1f6aa5", "#5aa0d6")))
-                overall = ((idx - 1) + frac) / total
-                self.after(0, lambda: self.progress.set(overall))
-        elif d.get("status") == "finished":
-            self.after(0, lambda: row.set_status("변환 중...", color=("#1f6aa5", "#5aa0d6")))
-
     def _on_all_done(self, success: int, total: int):
         self._downloading = False
-        self.progress.set(1.0)
-        self.download_btn.configure(state="normal", text="전체 다운로드")
-        self.add_btn.configure(state="normal")
-        self._update_list_header()
+        self._set_progress(1.0)
+        self.download_btn.setEnabled(True)
+        self.download_btn.setText("전체 다운로드")
+        self.add_btn.setEnabled(True)
+        self.clear_list_btn.setEnabled(True)
         for row in self.rows:
             row.set_controls_enabled(True)
         self._set_status(f"완료: {success}/{total}개 다운로드됨")
-        # 내역이 바뀌었으니 표시. 열려 있으면 즉시, 닫혀 있으면 다음에 열 때 갱신.
-        if self.history_panel is not None:
-            self.history_panel.mark_dirty()
-            if self._history_visible:
-                self.history_panel.render()
+        # 내역 갱신(패널이 열려 있으면 즉시 반영)
+        if self.history_dock.isVisible():
+            self.history_panel.render()
 
-    # -------------------------------------------------------------- 유틸
-    def _load_thumbnail(self, url: str):
-        if not url:
-            return None
+    # ------------------------------------------------------ 내역 패널
+    def toggle_history(self):
+        if self.history_dock.isVisible():
+            self.history_dock.hide()
+            self._grow_width(-1)
+        else:
+            self.history_panel.render()
+            self.history_dock.show()
+            self._grow_width(+1)
+
+    def _grow_width(self, direction: int):
+        """창모드에서 내역 패널 폭만큼 창을 넓히거나(+) 되돌린다(-). 최대화면은 그대로."""
+        if self.isMaximized() or self.isFullScreen():
+            return
+        g = self.geometry()
+        delta = HISTORY_PANEL_WIDTH if direction > 0 else -HISTORY_PANEL_WIDTH
+        new_w = max(600, g.width() + delta)
+        x = g.x()
+        scr = self.screen().availableGeometry() if self.screen() else None
+        # 오른쪽으로 넘치면 창을 왼쪽으로 밀어 화면 안에 유지
+        if scr is not None and direction > 0 and x + new_w > scr.right():
+            x = max(scr.left(), scr.right() - new_w + 1)
+        self.setGeometry(x, g.y(), new_w, g.height())
+
+    # ------------------------------------------------------ 자동 업데이트
+    def _start_update_check(self):
+        threading.Thread(target=self._update_check_worker, daemon=True).start()
+
+    def _update_check_worker(self):
         try:
-            resp = requests.get(url, timeout=10)
-            resp.raise_for_status()
-            img = Image.open(io.BytesIO(resp.content))
-            return ctk.CTkImage(light_image=img, dark_image=img, size=(120, 68))
+            latest = updater.check_update(__version__)
         except Exception:
-            return None
+            return  # 네트워크 오류 등은 조용히 무시
+        if latest:
+            self._post(lambda: self._show_update_modal(latest))
 
-    def _set_status(self, text: str):
-        self.status_label.configure(text=text)
+    def _show_update_modal(self, latest: dict):
+        newver = latest["tag"].lstrip("vV")
+        dlg = QDialog(self)
+        dlg.setWindowTitle("업데이트")
+        dlg.setMinimumWidth(420)
+        v = QVBoxLayout(dlg)
+        head = QLabel("새로운 버전이 릴리즈 되었습니다.\n업데이트하시겠습니까?")
+        head.setAlignment(Qt.AlignCenter)
+        v.addWidget(head)
+        v.addWidget(QLabel(f"현재 {__version__}    →    새 버전 {newver}"), 0, Qt.AlignCenter)
+        box = QTextEdit()
+        box.setReadOnly(True)
+        box.setFixedHeight(150)
+        box.setPlainText(updater.extract_summary(latest.get("body", "")))
+        v.addWidget(box)
+        status = QLabel("")
+        status.setStyleSheet("color:gray;")
+        v.addWidget(status)
 
-    def _center_popup(self, win, w: int, h: int):
-        """팝업 창을 메인 창의 실제 화면 위치 기준 중앙에 띄운다(다중 모니터 대응)."""
-        self.update_idletasks()
-        px, py = self.winfo_rootx(), self.winfo_rooty()
-        pw, ph = self.winfo_width(), self.winfo_height()
-        x = px + max(0, (pw - w) // 2)
-        y = py + max(0, (ph - h) // 3)  # 살짝 위쪽이 자연스러움
-        win.geometry(f"{w}x{h}+{x}+{y}")
+        bar = QHBoxLayout()
+        bar.addStretch(1)
+        later = QPushButton("나중에")
+        later.clicked.connect(dlg.reject)
+        ok = QPushButton("확인")
+        bar.addWidget(later)
+        bar.addWidget(ok)
+        v.addLayout(bar)
+
+        def do_update():
+            try:
+                updater.download_and_apply(
+                    latest, updater.build_kind(),
+                    progress=lambda p: self._post(lambda: status.setText(f"다운로드 중... {p:.0f}%")),
+                )
+                self._post(lambda: status.setText("교체 후 재시작합니다..."))
+                self._post(lambda: QApplication.instance().quit())  # 종료하면 도우미가 교체
+            except Exception as e:
+                self._post(lambda e=e: status.setText(f"실패: {str(e)[:60]}"))
+                self._post(lambda: (ok.setEnabled(True), later.setEnabled(True)))
+
+        def on_ok():
+            ok.setEnabled(False)
+            later.setEnabled(False)
+            status.setText("다운로드 준비 중...")
+            threading.Thread(target=do_update, daemon=True).start()
+
+        ok.clicked.connect(on_ok)
+        dlg.exec()
+
+    # ------------------------------------------------------ 창 위치 저장
+    def _restore_geometry(self):
+        win = config.get_window()
+        if win and all(k in win for k in ("x", "y", "w", "h")):
+            try:
+                self.setGeometry(int(win["x"]), int(win["y"]), int(win["w"]), int(win["h"]))
+            except Exception:
+                pass
+
+    def closeEvent(self, event):
+        g = self.geometry()
+        config.set_window({"x": g.x(), "y": g.y(), "w": g.width(), "h": g.height(), "zoomed": False})
+        super().closeEvent(event)
 
 
 def main():
-    app = App()
-    app.mainloop()
+    app = QApplication([])
+    win = MainWindow()
+    win.show()
+    app.exec()
 
 
 if __name__ == "__main__":

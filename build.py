@@ -99,7 +99,7 @@ def _common_args() -> list[str]:
         "--paths", os.path.join(ROOT, "src"),
         "--version-file", _write_version_file(),
         # 데이터/서브모듈 수집 (누락 시 런타임 오류 방지)
-        "--collect-all", "customtkinter",
+        # PySide6는 PyInstaller 내장 훅이 Qt 플러그인(platforms 등)을 자동 번들.
         "--collect-submodules", "yt_dlp",
         "--collect-data", "yt_dlp",
         "--distpath", os.path.join(ROOT, "dist"),

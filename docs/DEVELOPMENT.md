@@ -42,7 +42,7 @@
 | 언어 | **Python 3.14** | 다운로드 표준 엔진 yt-dlp가 Python 라이브러리 |
 | 다운로드 엔진 | **yt-dlp** | 정보조회·포맷목록·다운로드 모두 담당, 유지보수 활발 |
 | 후처리 | **ffmpeg** | mp3 변환, 영상+음성 병합에 필수 (외부 바이너리) |
-| GUI | **CustomTkinter** | 설치·배포 간단, 모던한 룩앤필, 표준 tkinter 기반 |
+| GUI | **PySide6 (Qt)** | 네이티브 위젯·부드러운 스크롤, 모델/뷰. (구 CustomTkinter에서 이식) |
 | 이미지 | **Pillow + requests** | 썸네일 다운로드/표시 |
 | 배포 | **PyInstaller** | 단독 실행 exe 생성 (ffmpeg 번들 포함 예정) |
 
@@ -61,7 +61,7 @@ Y_Download/
 ├── src/
 │   ├── downloader.py       # 핵심 로직: yt-dlp 래핑 (정보조회 + 다운로드 + 크기추정)
 │   ├── config.py           # 설정(마지막 저장위치) + 다운로드 내역 JSON 영구저장
-│   └── app.py              # CustomTkinter GUI (진입점)
+│   └── app.py              # PySide6(Qt) GUI (진입점)
 ├── bin/                    # (선택) ffmpeg.exe를 여기 두면 자동 사용
 ├── requirements.txt
 ├── README.md
@@ -189,7 +189,8 @@ python build.py full      # 폴더형만
 python build.py lite      # 라이트만
 ```
 
-- 공통: `--windowed --collect-all customtkinter --collect-submodules/-data yt_dlp`, `--paths src`.
+- 공통: `--windowed --collect-submodules/-data yt_dlp`, `--paths src`. (PySide6 Qt 플러그인은
+  PyInstaller 내장 훅이 자동 번들)
 - full: `bin/ffmpeg.exe`, `bin/ffprobe.exe`를 `ffmpeg/` 하위로 번들 → 런타임에 자동 인식.
 - 아이콘: `assets/app.ico`가 있으면 자동 적용(`--icon`).
 - 검증됨: 두 빌드 성공, full exe 실행 시 GUI 정상 기동(스모크 테스트 통과).
@@ -304,6 +305,14 @@ git push origin v1.2.0
 - [x] **자동 테스트 파이프라인**(`tests/`, `pytest`): ① 순수 로직 단위 ② GUI 스모크(실제 Tk,
   네트워크 목킹) ③ 실네트워크 통합(수동). dev/main push·PR 시 `test.yml` 자동 실행, 릴리스는
   테스트 통과 후에만 진행(`release.yml` `needs: test`). 상세는 **`docs/TEST.md`** 참고.
+
+### 완료 (추가)
+- [x] **UI 프레임워크 CustomTkinter → PySide6(Qt) 전환** (`feature/qt-migration`).
+  스크롤 잔상·끊김의 근본 원인이던 Tk 캔버스 렌더링을 벗어남. 백엔드
+  (downloader/config/updater)·테스트 ①③ 그대로, `app.py`만 Qt로 재작성.
+  내역 패널은 QDockWidget, 스레드→UI는 시그널 브리지(`_post`). GUI 테스트는
+  `tests/test_gui.py`(Qt)로 교체. lite exe 빌드·기동 검증 완료. **v0.2.0**.
+  > 위 "내역 렌더 성능 — 가상 스크롤" 등 CTk 시절 메모는 역사적 기록(현재는 Qt 네이티브 스크롤).
 
 ### 다음 할 일 (우선순위 순)
 - [ ] (후속) **macOS 배포** — 현재 Windows 전용(exe). Qt 전환으로 UI는 크로스플랫폼이 되므로

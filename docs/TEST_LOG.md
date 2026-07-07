@@ -15,6 +15,15 @@
 
 ---
 
+## 2026-07-08 · feature/qt-migration (M4) → v0.2.0 — 전환 마무리·배포
+- **테스트한 항목**:
+  - 모듈 스왑(CTk `app.py` 제거, Qt를 `app.py`로) 후 **전체 회귀** 실행
+  - `build.py`에서 customtkinter 수집 제거, PySide6는 PyInstaller 내장 훅에 위임
+  - **lite exe 실제 빌드** 성공 + **기동 확인**(실행 후 생존 → PySide6 platform 플러그인 번들 정상)
+  - customtkinter/app_qt 잔여 참조 점검(별칭 `import app as app_qt`만 남김)
+- **결과**: 53 passed, 2 deselected(network), 0 skipped. lite 빌드/기동 OK.
+- **미흡 → 개선**: 특이사항 없음(전환 후 그린).
+
 ## 2026-07-07 · feature/qt-migration (M1~M3) — PySide6 이식
 - **테스트한 항목**:
   - (스모크) M1 창 구성·단일/재생목록 추가·파라미터(영상/음원)·삭제

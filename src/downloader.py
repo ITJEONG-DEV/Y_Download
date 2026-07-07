@@ -60,6 +60,14 @@ class VideoInfo:
         return f"{m}:{s:02d}"
 
 
+@dataclass
+class PlaylistEntry:
+    """재생목록 평면 조회 결과의 항목 1건(상세 정보 없이 URL·제목만)."""
+    url: str
+    title: str
+    duration: int = 0
+
+
 # 다운로드 진행률 콜백 타입: (상태 dict) -> None
 ProgressCallback = Callable[[dict], None]
 
@@ -159,6 +167,57 @@ def fetch_info(url: str, timeout: int = 5) -> VideoInfo:
         video_size_by_height=video_size_by_height,
         best_audio_size=best_audio_size,
     )
+
+
+def is_playlist_url(url: str) -> bool:
+    """재생목록 성분(list= 파라미터 또는 /playlist 경로)이 있는 URL인지 판별한다."""
+    u = url.lower()
+    return "list=" in u or "/playlist" in u
+
+
+def fetch_playlist(url: str, timeout: int = 15):
+    """
+    재생목록 URL을 평면(flat) 조회해 (재생목록 제목, [PlaylistEntry, ...])를 반환한다.
+    각 항목의 썸네일·해상도 등 상세 정보는 조회하지 않으므로 큰 목록도 빠르게 훑는다.
+    재생목록이 아니거나 항목이 없으면 None을 반환한다.
+    """
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "socket_timeout": timeout,
+        # 항목을 펼치지 않고 목록만 빠르게 가져온다.
+        "extract_flat": "in_playlist",
+        "ignoreerrors": True,  # 비공개/삭제 항목이 섞여 있어도 계속 진행
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    entries = info.get("entries") if info else None
+    if not entries:
+        return None  # 단일 영상 URL이었음
+
+    result: list[PlaylistEntry] = []
+    for e in entries:
+        if not e:
+            continue  # 비공개/삭제 항목
+        eurl = e.get("url") or e.get("webpage_url") or e.get("id")
+        if not eurl:
+            continue
+        # 평면 조회에서는 url이 영상 id일 수 있으므로 watch URL로 보정
+        if not eurl.startswith("http"):
+            eurl = f"https://www.youtube.com/watch?v={eurl}"
+        result.append(
+            PlaylistEntry(
+                url=eurl,
+                title=e.get("title") or eurl,
+                duration=int(e.get("duration") or 0),
+            )
+        )
+
+    if not result:
+        return None
+    return info.get("title") or "재생목록", result
 
 
 def _stream_size(f: dict, duration: int) -> Optional[int]:

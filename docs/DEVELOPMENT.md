@@ -295,6 +295,12 @@ git push origin v1.2.0
 - [x] Auto update handles non-ASCII paths: replaced `cmd` batch helper with UTF-8 BOM PowerShell helper and `-LiteralPath`.
 - [x] 파일명 중복 처리 정책(자동번호/덮어쓰기/건너뛰기) — 설정 드롭다운·기억, `download()`가
   `DownloadResult(path, status)` 반환(status: downloaded/skipped/overwritten).
+- [x] **재생목록 URL 전체 추가**: 재생목록 감지(`is_playlist_url`) → 평면 조회(`fetch_playlist`,
+  `extract_flat`)로 항목 목록만 빠르게 확보 → 개수 확인 팝업 → 제목만으로 대기열에 즉시 추가하고
+  각 항목 상세정보(썸네일·해상도)는 워커 풀(`ENRICH_CONCURRENCY`)로 병렬 개별 조회해 행 갱신
+  (`DownloadRow.update_info`). `watch?v=…&list=…`는 '이 영상만' 선택지 제공.
+- [x] 팝업(업데이트/재생목록 안내)을 메인 창의 실제 화면 위치 기준 중앙에 배치(`_center_popup`,
+  다중 모니터에서 다른 모니터에 뜨던 문제 해결).
 
 ### 다음 할 일 (우선순위 순)
 - [ ] **실제 다운로드 최종 검증** (full/lite exe에서 영상·음원 다운로드까지 확인)
@@ -302,7 +308,6 @@ git push origin v1.2.0
 - [ ] 다운로드 취소 버튼
 - [ ] 앱 아이콘(`assets/app.ico`) 제작 후 빌드에 반영
 - [ ] full 배포 용량 축소 검토 (ffmpeg essentials 빌드로 교체 시 ~85MB)
-- [ ] (선택) 플레이리스트 전체 추가 기능
 - [ ] (선택) 내역에 저장 경로/파일명 저장해 "폴더 열기" 기능
 
 ### 크기 추정 정확도 메모

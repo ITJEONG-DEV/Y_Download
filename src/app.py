@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import os
+import queue
 import threading
 import uuid
 from datetime import datetime
@@ -33,6 +34,8 @@ import config
 from downloader import (
     VideoInfo,
     fetch_info,
+    fetch_playlist,
+    is_playlist_url,
     download,
     sanitize_filename,
     estimate_size,
@@ -68,6 +71,8 @@ HEIGHT_LABELS = {
 }
 AUDIO_BITRATES = ["320", "256", "192", "128"]
 INFO_FETCH_TIMEOUT_SEC = 5
+# 재생목록 항목의 상세 정보를 병렬로 조회할 때 동시 실행 수
+ENRICH_CONCURRENCY = 3
 
 # 내역 사이드 패널 폭(px) 및 좌우 여백
 HISTORY_PANEL_WIDTH = 320
@@ -258,6 +263,21 @@ class DownloadRow(ctk.CTkFrame):
 
     def set_index(self, index: int):
         self.index_label.configure(text=str(index))
+
+    def update_info(self, info: VideoInfo, thumb=None):
+        """재생목록으로 빠르게 추가된 뒤, 개별 조회가 끝나면 상세 정보로 갱신한다."""
+        self.info = info
+        self.title_label.configure(text=f"{info.title}   ({info.duration_str})")
+        if thumb is not None:
+            self._thumb = thumb
+            self.thumb_label.configure(image=thumb)
+        # 영상 모드일 때만 실제 해상도 목록을 채운다(사용자가 고른 값은 보존).
+        if self.kind_menu.get() != "음원" and info.available_heights:
+            cur = self.quality_menu.get()
+            labels = [_quality_label(h) for h in info.available_heights]
+            self.quality_menu.configure(values=labels)
+            self.quality_menu.set(cur if cur in labels else labels[0])
+        self._update_estimate()
 
     # 파일명 입력창 커서 이동 편의 (Up=맨앞, Down=맨뒤)
     def _cursor_home(self, _event=None):
@@ -729,6 +749,12 @@ class App(ctk.CTk):
         self.item_defaults = config.get_item_defaults()
         self._add_request_id = 0
         self._add_pending = False
+        # 재생목록 항목 상세 정보 병렬 조회용 상태
+        self._enrich_queue: queue.Queue = queue.Queue()
+        self._enrich_lock = threading.Lock()
+        self._enrich_workers = 0
+        self._enrich_pending = 0
+        self._enrich_done = 0
 
         self._build_ui()
 
@@ -869,9 +895,9 @@ class App(ctk.CTk):
         newver = latest["tag"].lstrip("vV")
         win = ctk.CTkToplevel(self)
         win.title("업데이트")
-        win.geometry("440x400")
         win.resizable(False, False)
         win.transient(self)
+        self._center_popup(win, 440, 400)
 
         ctk.CTkLabel(
             win, text="새로운 버전이 릴리즈 되었습니다.\n업데이트하시겠습니까?",
@@ -1039,7 +1065,14 @@ class App(ctk.CTk):
         self.add_url(url)
 
     def add_url(self, url: str):
-        """Add a URL by fetching metadata in the background."""
+        """URL\uc744 \ucd94\uac00\ud55c\ub2e4. \uc7ac\uc0dd\ubaa9\ub85d URL\uc774\uba74 \ubaa9\ub85d \uc804\uccb4 \ucd94\uac00 \ud750\ub984\uc73c\ub85c, \uc544\ub2c8\uba74 \ub2e8\uc77c \ucd94\uac00\ub85c."""
+        if is_playlist_url(url):
+            self._start_playlist_add(url)
+        else:
+            self._start_single_add(url)
+
+    def _start_single_add(self, url: str):
+        """\ub2e8\uc77c \uc601\uc0c1 URL\uc744 \ubc31\uadf8\ub77c\uc6b4\ub4dc\ub85c \uc870\ud68c\ud574 \ucd94\uac00\ud55c\ub2e4."""
         self._add_request_id += 1
         request_id = self._add_request_id
         self._add_pending = True
@@ -1047,6 +1080,155 @@ class App(ctk.CTk):
         self._set_status(f"\uc601\uc0c1 \uc815\ubcf4\ub97c \uc870\ud68c\ud558\ub294 \uc911... {url}")
         self.after(INFO_FETCH_TIMEOUT_SEC * 1000, lambda rid=request_id: self._on_add_timeout(rid))
         threading.Thread(target=self._add_worker, args=(url, request_id), daemon=True).start()
+
+    # ------------------------------------------------------ \uc7ac\uc0dd\ubaa9\ub85d \ucd94\uac00
+    def _start_playlist_add(self, url: str):
+        """\uc7ac\uc0dd\ubaa9\ub85d URL\uc744 \ud3c9\uba74 \uc870\ud68c\ud574 \uac1c\uc218 \ud655\uc778 \ud6c4 \ub300\uae30\uc5f4\uc5d0 \ucd94\uac00\ud55c\ub2e4."""
+        self.add_btn.configure(state="disabled", text="\uc7ac\uc0dd\ubaa9\ub85d \ud655\uc778...")
+        self._set_status("\uc7ac\uc0dd\ubaa9\ub85d\uc744 \ud655\uc778\ud558\ub294 \uc911...")
+        threading.Thread(target=self._playlist_worker, args=(url,), daemon=True).start()
+
+    def _playlist_worker(self, url: str):
+        try:
+            result = fetch_playlist(url)
+        except Exception as e:
+            self.after(0, lambda e=e: self._on_playlist_error(e, url))
+            return
+        self.after(0, lambda: self._on_playlist_fetched(url, result))
+
+    def _on_playlist_error(self, err: Exception, url: str):
+        # \uc7ac\uc0dd\ubaa9\ub85d \uc870\ud68c \uc2e4\ud328 \uc2dc \ub2e8\uc77c \uc601\uc0c1\uc73c\ub85c\ub77c\ub3c4 \uc2dc\ub3c4
+        self.add_btn.configure(state="normal", text="\ubaa9\ub85d\uc5d0 \ucd94\uac00")
+        self._set_status(f"\uc7ac\uc0dd\ubaa9\ub85d \uc870\ud68c \uc2e4\ud328, \ub2e8\uc77c \uc601\uc0c1\uc73c\ub85c \uc2dc\ub3c4: {err}")
+        self._start_single_add(url)
+
+    def _on_playlist_fetched(self, url: str, result):
+        self.add_btn.configure(state="normal", text="\ubaa9\ub85d\uc5d0 \ucd94\uac00")
+        # \uc7ac\uc0dd\ubaa9\ub85d\uc774 \uc544\ub2c8\uc5c8\uac70\ub098 \ud56d\ubaa9\uc774 \uc5c6\uc73c\uba74 \ub2e8\uc77c \uc601\uc0c1\uc73c\ub85c \ucc98\ub9ac
+        if not result:
+            self._start_single_add(url)
+            return
+        title, entries = result
+        if len(entries) == 1:
+            self._start_single_add(entries[0].url)
+            return
+        # \uac1c\uc218 \ud655\uc778 \ubaa8\ub2ec (watch URL\uc774\uba74 '\uc774 \uc601\uc0c1\ub9cc' \uc120\ud0dd\uc9c0 \uc81c\uacf5)
+        has_single = "v=" in url.lower()
+        self._show_playlist_modal(title, entries, url, has_single)
+
+    def _show_playlist_modal(self, title, entries, url, has_single):
+        win = ctk.CTkToplevel(self)
+        win.title("\uc7ac\uc0dd\ubaa9\ub85d \ucd94\uac00")
+        win.resizable(False, False)
+        win.transient(self)
+        self._center_popup(win, 420, 220)
+
+        ctk.CTkLabel(
+            win, text="\uc7ac\uc0dd\ubaa9\ub85d\uc744 \uac10\uc9c0\ud588\uc2b5\ub2c8\ub2e4.",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(pady=(22, 6))
+        name = title if len(title) <= 34 else title[:33] + "\u2026"
+        ctk.CTkLabel(win, text=f"'{name}'").pack(pady=(0, 2))
+        ctk.CTkLabel(
+            win, text=f"\uc601\uc0c1 {len(entries)}\uac1c\uac00 \uc788\uc2b5\ub2c8\ub2e4. \ubaa8\ub450 \ub300\uae30\uc5f4\uc5d0 \ucd94\uac00\ud560\uae4c\uc694?",
+        ).pack(pady=(0, 4))
+
+        bar = ctk.CTkFrame(win, fg_color="transparent")
+        bar.pack(pady=16)
+        ctk.CTkButton(
+            bar, text="\ucde8\uc18c", width=96, fg_color="gray", hover_color="gray30",
+            command=win.destroy,
+        ).pack(side="left", padx=6)
+        if has_single:
+            ctk.CTkButton(
+                bar, text="\uc774 \uc601\uc0c1\ub9cc", width=110,
+                fg_color=("gray70", "gray40"), hover_color=("gray60", "gray50"),
+                command=lambda: (win.destroy(), self._start_single_add(url)),
+            ).pack(side="left", padx=6)
+        ctk.CTkButton(
+            bar, text=f"\ubaa8\ub450 \ucd94\uac00 ({len(entries)})", width=130,
+            command=lambda: (win.destroy(), self._add_playlist_entries(entries)),
+        ).pack(side="left", padx=6)
+        win.after(100, win.grab_set)  # \ubaa8\ub2ec \uace0\uc815
+
+    def _add_playlist_entries(self, entries):
+        """\ud56d\ubaa9\ub4e4\uc744 \uc81c\ubaa9\ub9cc\uc73c\ub85c \uc989\uc2dc \ucd94\uac00\ud558\uace0, \uc0c1\uc138 \uc815\ubcf4\ub294 \ubc31\uadf8\ub77c\uc6b4\ub4dc\ub85c \uac1c\ubcc4 \uc870\ud68c\ud55c\ub2e4."""
+        if self.empty_label.winfo_exists():
+            self.empty_label.pack_forget()
+        new_rows = []
+        for e in entries:
+            info = VideoInfo(
+                url=e.url, title=e.title, thumbnail_url="",
+                duration=e.duration, uploader="",
+                available_heights=[], video_size_by_height={}, best_audio_size=0,
+            )
+            row = DownloadRow(
+                self.list_frame, info, None, self._remove_row,
+                defaults=self.item_defaults,
+                on_defaults_change=self._on_row_defaults_change,
+            )
+            row.pack(fill="x", padx=4, pady=4)
+            self.rows.append(row)
+            new_rows.append(row)
+        self._refresh_list_state()
+        self.after(30, lambda: self._apply_responsive_layout(force=True))
+        self._enqueue_enrichment(new_rows)
+
+    def _enqueue_enrichment(self, rows):
+        """\ud589\ub4e4\uc744 \uc870\ud68c \ud050\uc5d0 \ub123\uace0 \ubd80\uc871\ud55c \ub9cc\ud07c \uc6cc\ucee4 \uc2a4\ub808\ub4dc\ub97c \ub744\uc6b4\ub2e4."""
+        for row in rows:
+            self._enrich_queue.put(row)
+        self._enrich_pending += len(rows)
+        self._set_status(
+            f"\uc7ac\uc0dd\ubaa9\ub85d {len(rows)}\uac1c \ucd94\uac00\ub428. \uc0c1\uc138 \uc815\ubcf4 \uc870\ud68c \uc911... "
+            f"(0/{self._enrich_pending})"
+        )
+        with self._enrich_lock:
+            while (self._enrich_workers < ENRICH_CONCURRENCY
+                   and not self._enrich_queue.empty()):
+                self._enrich_workers += 1
+                threading.Thread(target=self._enrich_worker, daemon=True).start()
+
+    def _enrich_worker(self):
+        while True:
+            try:
+                row = self._enrich_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                exists = bool(row.winfo_exists())
+            except Exception:
+                exists = False
+            if not exists:
+                self.after(0, self._enrich_one_done)  # \uc0ad\uc81c\ub41c \ud589\ub3c4 \uce74\uc6b4\ud2b8\ub294 \uc815\ub9ac
+                continue
+            info = thumb = None
+            try:
+                info = fetch_info(row.info.url, timeout=INFO_FETCH_TIMEOUT_SEC)
+                thumb = self._load_thumbnail(info.thumbnail_url)
+            except Exception:
+                pass
+            self.after(0, lambda r=row, i=info, t=thumb: self._apply_enrichment(r, i, t))
+        with self._enrich_lock:
+            self._enrich_workers -= 1
+
+    def _apply_enrichment(self, row, info, thumb):
+        if info is not None:
+            try:
+                if row.winfo_exists():
+                    row.update_info(info, thumb)
+            except Exception:
+                pass
+        self._enrich_one_done()
+
+    def _enrich_one_done(self):
+        self._enrich_done += 1
+        total = self._enrich_pending
+        if self._enrich_done >= total:
+            self._set_status(f"\uc7ac\uc0dd\ubaa9\ub85d \uc0c1\uc138 \uc815\ubcf4 \uc870\ud68c \uc644\ub8cc  (\ucd1d {len(self.rows)}\uac1c)")
+            self._enrich_pending = self._enrich_done = 0
+        else:
+            self._set_status(f"\uc0c1\uc138 \uc815\ubcf4 \uc870\ud68c \uc911... ({self._enrich_done}/{total})")
 
     def _add_worker(self, url: str, request_id: int):
         try:
@@ -1358,6 +1540,15 @@ class App(ctk.CTk):
 
     def _set_status(self, text: str):
         self.status_label.configure(text=text)
+
+    def _center_popup(self, win, w: int, h: int):
+        """팝업 창을 메인 창의 실제 화면 위치 기준 중앙에 띄운다(다중 모니터 대응)."""
+        self.update_idletasks()
+        px, py = self.winfo_rootx(), self.winfo_rooty()
+        pw, ph = self.winfo_width(), self.winfo_height()
+        x = px + max(0, (pw - w) // 2)
+        y = py + max(0, (ph - h) // 3)  # 살짝 위쪽이 자연스러움
+        win.geometry(f"{w}x{h}+{x}+{y}")
 
 
 def main():

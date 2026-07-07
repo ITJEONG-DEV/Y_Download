@@ -301,6 +301,9 @@ git push origin v1.2.0
   (`DownloadRow.update_info`). `watch?v=…&list=…`는 '이 영상만' 선택지 제공.
 - [x] 팝업(업데이트/재생목록 안내)을 메인 창의 실제 화면 위치 기준 중앙에 배치(`_center_popup`,
   다중 모니터에서 다른 모니터에 뜨던 문제 해결).
+- [x] **자동 테스트 파이프라인**(`tests/`, `pytest`): ① 순수 로직 단위 ② GUI 스모크(실제 Tk,
+  네트워크 목킹) ③ 실네트워크 통합(수동). dev/main push·PR 시 `test.yml` 자동 실행, 릴리스는
+  테스트 통과 후에만 진행(`release.yml` `needs: test`). 상세는 **`docs/TEST.md`** 참고.
 
 ### 다음 할 일 (우선순위 순)
 - [ ] **실제 다운로드 최종 검증** (full/lite exe에서 영상·음원 다운로드까지 확인)

@@ -1,0 +1,32 @@
+name: Tests
+
+# dev/main 에 push 하거나 PR 을 열면 자동으로 테스트를 실행한다.
+# (네트워크 통합 테스트는 제외 — 유튜브 상태에 의존해 불안정하므로 수동 실행)
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  test:
+    runs-on: windows-latest   # Tk GUI 스모크 테스트가 동작하는 데스크톱 세션 제공
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests (unit + GUI, network 제외)
+        run: python -m pytest -m "not network"

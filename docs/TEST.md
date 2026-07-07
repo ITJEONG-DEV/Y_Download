@@ -56,7 +56,8 @@ tests/
 ├── test_downloader.py    # ① 파일명 정리/URL 판별/크기추정/유니크이름/재생목록 파싱
 ├── test_config.py        # ① 설정·내역 JSON 저장(임시 폴더 격리)
 ├── test_updater.py       # ① 버전 비교·요약 추출·자산 선택(네트워크 목킹)
-├── test_gui.py           # ② 재생목록 추가/개별조회/단일추가/팝업 중앙배치
+├── test_gui.py           # ② (CTk) 재생목록 추가/개별조회/단일추가/팝업 중앙배치
+├── test_gui_qt.py        # ② (Qt) 목록 추가/삭제/내역 패널 토글·폭확장·1줄축약
 └── test_network.py       # ③ 실제 fetch_info / fetch_playlist
 ```
 

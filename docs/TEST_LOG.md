@@ -15,6 +15,19 @@
 
 ---
 
+## 2026-07-07 · feature/qt-migration (M1~M3) — PySide6 이식
+- **테스트한 항목**:
+  - (스모크) M1 창 구성·단일/재생목록 추가·파라미터(영상/음원)·삭제
+  - (스모크) M2 내역 패널 토글·표시·제목형식·펼침·삭제·전체지우기
+  - (스모크) 창모드 내역 폭확장/원복/최대화 안전
+  - (스모크) 내역 아이템 접힘 1줄 축약(ElidedLabel)·버튼 영역 유지·펼침 높이 증가
+  - M3에서 위 스모크들을 `tests/test_gui_qt.py`(marker gui)로 정식 편입
+- **결과**: 56 passed, 2 deselected(network), 0 skipped (Qt GUI 5건 추가). Tk·Qt 테스트 한 프로세스 공존 확인.
+- **미흡 → 개선**:
+  - 내역 제목이 항상 `wordWrap`이라 접힘에도 여러 줄 + 긴 파일명이 ＋/🗑 버튼을 행 밖으로 밀어냄 →
+    가로 sizeHint를 무시하고 접힘 시 …축약하는 **ElidedLabel** 도입으로 두 문제 동시 해결.
+  - 스모크를 매번 임시 스크립트로 돌리던 것 → 정식 `test_gui_qt.py`로 회귀 편입.
+
 ## 2026-07-07 · c1d50c9 — 자동 테스트 파이프라인 도입
 - **테스트한 항목**:
   - ① 단위 — downloader(`sanitize_filename`/`is_playlist_url`/`format_size`/`estimate_size`

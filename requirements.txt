@@ -1,8 +1,9 @@
 # 다운로드 엔진 (유튜브 정보 조회 + 다운로드)
 yt-dlp>=2024.1.1
 
-# 데스크톱 GUI
+# 데스크톱 GUI (CustomTkinter → PySide6 전환 진행 중)
 customtkinter>=5.2.2
+PySide6>=6.6
 
 # 썸네일 이미지 표시
 Pillow>=10.0.0

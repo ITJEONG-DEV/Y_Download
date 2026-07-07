@@ -306,6 +306,17 @@ git push origin v1.2.0
   테스트 통과 후에만 진행(`release.yml` `needs: test`). 상세는 **`docs/TEST.md`** 참고.
 
 ### 다음 할 일 (우선순위 순)
+- [ ] (후속) **macOS 배포** — 현재 Windows 전용(exe). Qt 전환으로 UI는 크로스플랫폼이 되므로
+  아래를 갖추면 Mac 지원 가능:
+  - PyInstaller는 **크로스컴파일 불가** → macOS에서 빌드해야 함. GitHub Actions `macos-latest`
+    러너로 `.app`(+`.dmg`) 빌드 잡 추가(현 `release.yml`은 windows-latest 전용).
+  - **ffmpeg/ffprobe의 macOS(arm64/x86_64) 바이너리** 확보·번들. `_ffmpeg_location`에 .app
+    내부(`Contents/MacOS`, `Contents/Frameworks`) 및 실행파일 옆 탐색 경로 추가.
+  - **코드 서명 + 공증(notarization)** — Gatekeeper 통과용(Apple Developer 인증서 필요). 없으면
+    사용자가 "확인되지 않은 개발자" 경고를 수동 우회해야 함.
+  - `os.startfile`(Windows 전용) 등 플랫폼 종속 코드 분기(macOS는 `open`), 경로/설정 폴더 점검.
+  - 자동 업데이트(`updater.py`)의 교체 스크립트가 PowerShell 기반 → macOS는 shell 스크립트 별도 필요.
+  - 유니버설(arm64+x86_64) 또는 아키텍처별 2종 배포 결정.
 - [ ] (후순위) 다운로드 목록 상단 **포맷/확장자/품질 일괄 변경** 바 (재생목록 대량 추가 대비). Qt(app_qt.py)에 구현 예정.
 - [ ] **실제 다운로드 최종 검증** (full/lite exe에서 영상·음원 다운로드까지 확인)
 - [ ] 예외 처리 다듬기 (잘못된 URL, 지역제한, 네트워크 오류 메시지 한글화)

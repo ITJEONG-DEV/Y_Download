@@ -76,3 +76,35 @@ def test_lite_script_contains_paths():
     script = u._lite_script(1234, r"C:\old\app.exe", r"C:\new\app.exe", r"C:\log.txt")
     assert "1234" in script
     assert "app.exe" in script
+
+
+# --------------------------------------------------------------- macOS
+def test_asset_url_selects_mac():
+    latest = {"assets": {
+        "Y_Downloader-full-0.2.0.zip": "http://x/full",
+        "Y_Downloader-mac-0.2.0.zip": "http://x/mac",
+        "Y_Downloader-mac-0.2.0.dmg": "http://x/dmg",  # dmg는 updater가 안 고름(zip만)
+    }}
+    assert u._asset_url(latest, "mac") == ("Y_Downloader-mac-0.2.0.zip", "http://x/mac")
+
+
+def test_build_kind_mac(monkeypatch):
+    monkeypatch.setattr(u.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(u.sys, "platform", "darwin")
+    assert u.build_kind() == "mac"
+
+
+def test_current_app_bundle(monkeypatch):
+    exe = "/Applications/Y_Downloader.app/Contents/MacOS/Y_Downloader"
+    monkeypatch.setattr(u.sys, "executable", exe, raising=False)
+    assert u._current_app_bundle() == "/Applications/Y_Downloader.app"
+
+
+def test_mac_script_content():
+    script = u._mac_script(4321, "/Applications/Y_Downloader.app", "/tmp/u.zip", "/tmp/log")
+    assert "4321" in script                       # 프로세스 종료 대기
+    assert "/Applications/Y_Downloader.app" in script
+    assert "/tmp/u.zip" in script
+    assert "ditto -x -k" in script                # 심볼릭 링크/권한 보존 압축 해제
+    assert "com.apple.quarantine" in script       # Gatekeeper 격리 속성 제거
+    assert 'find "$TMP" -maxdepth 2 -name "*.app"' in script

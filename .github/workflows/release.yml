@@ -116,3 +116,68 @@ jobs:
           files: release/*.zip
           generate_release_notes: true   # body 뒤에 커밋 기반 변경내역 자동 추가
           body_path: release_body.md
+
+  # macOS(.app) 빌드 — PyInstaller는 크로스컴파일 불가라 별도 macos 러너에서 빌드한다.
+  # 산출물은 서명/공증되지 않음(미확인 개발자) → 사용자는 최초 실행 시 우클릭>열기 필요.
+  # 같은 태그의 릴리스에 자산만 추가로 첨부한다(본문/이름은 windows 잡이 설정).
+  build-macos:
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Stamp version from tag
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          printf '__version__ = "%s"\n' "$v" > src/version.py
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "Building version $v"
+
+      - name: Download ffmpeg (static, arch-matched)
+        run: |
+          arch="$(uname -m)"
+          case "$arch" in
+            arm64)  suffix="darwin-arm64" ;;
+            x86_64) suffix="darwin-x64" ;;
+            *) echo "지원하지 않는 아키텍처: $arch" >&2; exit 1 ;;
+          esac
+          tag="b6.1.1"   # eugeneware/ffmpeg-static (정적 바이너리 릴리스)
+          base="https://github.com/eugeneware/ffmpeg-static/releases/download/$tag"
+          mkdir -p bin
+          curl -L --fail -o bin/ffmpeg  "$base/ffmpeg-$suffix"
+          curl -L --fail -o bin/ffprobe "$base/ffprobe-$suffix"
+          chmod +x bin/ffmpeg bin/ffprobe
+          ./bin/ffmpeg -version | head -1
+
+      - name: Build (.app + ffmpeg 번들)
+        run: python build.py full
+
+      - name: Package artifacts (.zip + .dmg)
+        run: |
+          mkdir -p release
+          app="dist/Y_Downloader.app"
+          # zip: 자동 업데이트가 사용. ditto로 심볼릭 링크/실행권한을 보존해 압축.
+          ditto -c -k --sequesterRsrc --keepParent "$app" "release/Y_Downloader-mac-$VERSION.zip"
+          # dmg: 사람이 받아서 드래그 설치하기 편한 형식.
+          hdiutil create -volname "Y_Downloader" -srcfolder "$app" -ov -format UDZO \
+            "release/Y_Downloader-mac-$VERSION.dmg"
+          ls -la release
+
+      - name: Attach macOS assets to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.zip
+            release/*.dmg

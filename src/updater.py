@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -44,9 +45,11 @@ def _parse_version(s: str) -> tuple:
 
 
 def build_kind() -> str:
-    """현재 실행 형태: 'full'(폴더형), 'lite'(단일파일), 'dev'(소스 실행)."""
+    """현재 실행 형태: 'full'(폴더형), 'lite'(단일파일), 'mac'(.app), 'dev'(소스 실행)."""
     if not getattr(sys, "frozen", False):
         return "dev"
+    if sys.platform == "darwin":
+        return "mac"  # macOS는 .app 번들 하나로 배포(별도 full/lite 구분 없음)
     exe_dir = os.path.dirname(sys.executable)
     if os.path.isdir(os.path.join(exe_dir, "_internal")):
         return "full"
@@ -218,15 +221,65 @@ def _launch_helper(script_text: str) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# macOS (.app 번들) 교체
+# ---------------------------------------------------------------------------
+def _current_app_bundle() -> str:
+    """실행 중인 .app 번들 경로. sys.executable = <App>.app/Contents/MacOS/<exe>."""
+    macos = os.path.dirname(sys.executable)   # Contents/MacOS
+    contents = os.path.dirname(macos)         # Contents
+    return os.path.dirname(contents)          # <App>.app
+
+
+def _mac_script(pid: int, app_cur: str, zpath: str, log: str) -> str:
+    """
+    프로세스 종료를 기다렸다가 zip을 풀어 .app을 통째로 교체하고 재실행하는 bash 스크립트.
+    Python zipfile은 심볼릭 링크/실행권한을 보존하지 못하므로 macOS 네이티브 `ditto`로 푼다.
+    서명이 없으므로 교체본의 격리 속성(quarantine)을 제거해 Gatekeeper 마찰을 줄인다.
+    """
+    q = shlex.quote
+    return "\n".join([
+        "#!/bin/bash",
+        f"LOG={q(log)}",
+        'echo "[update] mac start" > "$LOG"',
+        f"CUR={q(app_cur)}",
+        f"ZIP={q(zpath)}",
+        f"while kill -0 {pid} 2>/dev/null; do sleep 0.5; done",
+        "sleep 1",
+        'TMP=$(mktemp -d)',
+        'ditto -x -k "$ZIP" "$TMP" >> "$LOG" 2>&1',
+        'NEW=$(find "$TMP" -maxdepth 2 -name "*.app" -type d | head -1)',
+        'if [ -z "$NEW" ]; then echo "[update] mac: .app not found" >> "$LOG"; exit 1; fi',
+        'if rm -rf "$CUR" && ditto "$NEW" "$CUR" >> "$LOG" 2>&1; then',
+        '  xattr -dr com.apple.quarantine "$CUR" 2>/dev/null || true',
+        '  open "$CUR"',
+        '  echo "[update] mac done" >> "$LOG"',
+        'else',
+        '  echo "[update] mac failed" >> "$LOG"',
+        'fi',
+        "",
+    ])
+
+
+def _launch_helper_sh(script_text: str) -> None:
+    """bash 도우미 스크립트를 임시 파일로 쓰고 실행(백그라운드)."""
+    helper_dir = tempfile.mkdtemp(prefix="ydl_helper_")
+    sh = os.path.join(helper_dir, "update.sh")
+    with open(sh, "w", encoding="utf-8") as f:
+        f.write(script_text)
+    os.chmod(sh, 0o755)
+    subprocess.Popen(["/bin/bash", sh], close_fds=True)
+
+
 def download_and_apply(
     latest: dict,
     kind: str,
     progress: Optional[Callable[[float], None]] = None,
 ) -> None:
     """
-    Download the latest asset and launch a helper PowerShell script.
+    Download the latest asset and launch a helper script that replaces files and restarts.
     The caller must exit the app after this returns so the helper can replace files.
-    문제 진단 로그: %TEMP%/Y_Downloader_update.log
+    문제 진단 로그: (Windows) %TEMP%/Y_Downloader_update.log, (macOS) $TMPDIR/Y_Downloader_update.log
     """
     if kind == "dev":
         raise RuntimeError("개발 실행에서는 자동 업데이트를 적용할 수 없습니다.")
@@ -239,12 +292,19 @@ def download_and_apply(
     zpath = os.path.join(tmp, name)
     _download(url, zpath, progress)
 
+    pid = os.getpid()
+    log = _LOG_PATH
+
+    if kind == "mac":
+        # zip은 Python으로 풀지 않고(심볼릭 링크/권한 보존) bash 도우미가 ditto로 처리한다.
+        script = _mac_script(pid, _current_app_bundle(), zpath, log)
+        _launch_helper_sh(script)
+        return
+
+    # Windows: 압축을 풀어 파일 교체
     extract = os.path.join(tmp, "extracted")
     with zipfile.ZipFile(zpath) as z:
         z.extractall(extract)
-
-    pid = os.getpid()
-    log = _LOG_PATH
 
     if kind == "lite":
         new_exe = _find(extract, "Y_Downloader-lite.exe")

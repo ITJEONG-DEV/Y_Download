@@ -323,13 +323,20 @@ git push origin v1.2.0
     - `downloader._ffmpeg_location`/`_ffmpeg_names` — 실행파일명(`ffmpeg` vs `ffmpeg.exe`),
       macOS `.app`(`Contents/Frameworks`·`Resources[/ffmpeg]`) 탐색, `isfile`로 폴더 오인 방지.
     - `app._open_in_file_manager` — 폴더 열기(Windows `startfile`/macOS `open`/Linux `xdg-open`).
-  - [ ] `build.py` macOS `.app` 빌드 분기 + **ffmpeg/ffprobe macOS(arm64/x86_64) 바이너리** 번들.
-  - [ ] GitHub Actions `macos-latest` 러너로 `.app`(+`.dmg`) 빌드 잡 추가(현 `release.yml`은 win 전용).
-    PyInstaller는 **크로스컴파일 불가** → macOS에서 빌드해야 함. (이 PC(Windows)에서는 검증 불가.)
-  - [ ] 자동 업데이트(`updater.py`)의 교체 스크립트가 PowerShell 기반 → macOS는 shell 스크립트 별도 필요.
+  - [x] `build.py` macOS `.app` 빌드 분기 — `--windowed`(onedir)→`.app`, 아이콘 `.icns`, 버전
+    리소스(`--version-file`)는 Windows 전용이라 생략, `--osx-bundle-identifier`. ffmpeg 실행파일명
+    OS별 분기. Windows 산출물은 기존과 동일(회귀 없음).
+  - [x] GitHub Actions `build-macos` 잡(`macos-latest`) — arch 자동감지 후 정적 ffmpeg/ffprobe
+    (`eugeneware/ffmpeg-static b6.1.1`) 내려받아 번들, `.app`을 `ditto`로 zip + `hdiutil`로 `.dmg`
+    패키징해 같은 태그 릴리스에 첨부. **현재 러너 아키텍처(arm64) 단일 빌드.**
+  - [x] 자동 업데이트 macOS 대응(`updater.py`) — `build_kind()`가 `mac` 반환, `mac` zip 자산 선택,
+    bash 도우미가 `ditto`로 압축 해제(심볼릭 링크/권한 보존)해 `.app` 통째 교체 후 `open` 재실행,
+    교체본 `com.apple.quarantine` 제거. 단위 테스트 추가.
   - [ ] **코드 서명 + 공증(notarization)** — Gatekeeper 통과용(Apple Developer 인증서 필요, $99/년).
-    없으면 사용자가 "확인되지 않은 개발자" 경고를 수동 우회해야 함.
-  - [ ] 유니버설(arm64+x86_64) 또는 아키텍처별 2종 배포 결정.
+    없으면 사용자가 최초 실행 시 우클릭>열기로 "확인되지 않은 개발자" 경고를 수동 우회해야 함. **(보류)**
+  - [ ] (선택) 유니버설(arm64+x86_64) 또는 x86_64 별도 빌드 — 현재 arm64 단일. Intel Mac 대응 필요 시 결정.
+  - ⚠️ 위 macOS 빌드/CI/updater는 **Mac이 없어 이 PC에서 실행 검증 불가** — 코드/CI 레벨만 작성.
+    실제 `.app` 기동·자동교체는 태그 push 시 CI 로그 및 Mac 실기기에서 확인 필요.
 - [x] 다운로드 목록 상단 **포맷/확장자/품질 일괄 변경** 바 (재생목록 대량 추가 대비).
   URL 바 아래에 `일괄 적용` 바(포맷·확장자·품질 + [전체 적용]) 배치. 영상 품질은 **'≤ 목표 해상도'**
   로 각 행의 실제 가용 해상도 중 최적을 선택(정확히 일치하지 않아도 됨), 음원은 비트레이트 직접 적용.

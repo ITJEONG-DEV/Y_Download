@@ -15,6 +15,18 @@
 
 ---
 
+## 2026-07-08 · dev — macOS 배포: build.py/CI/updater (서명 제외)
+- **테스트한 항목**:
+  - (단위) `updater`: `_asset_url`의 `mac` zip 선택(dmg 제외), `build_kind`=='mac'(darwin+frozen),
+    `_current_app_bundle` 경로 파싱, `_mac_script` 내용(ditto·quarantine·.app 탐색).
+  - (검토) `build.py`: Windows 인자 무회귀 확인(--version-file/icon/add-binary 동일), macOS 분기 구성.
+  - (검토) `release.yml`: `build-macos` 잡 YAML 파싱 검증(arch감지·정적 ffmpeg·ditto zip·hdiutil dmg).
+- **결과**: 86 passed, 3 deselected. (updater +4건)
+- **미흡 → 개선**:
+  - macOS `.app`은 심볼릭 링크/실행권한을 포함해 **Python zipfile로 풀면 손상** → 자동 업데이트는
+    Python 추출을 건너뛰고 bash 도우미의 `ditto -x -k`로 처리하도록 분기.
+  - ⚠️ Mac 미보유로 **실제 빌드/기동/자동교체 검증은 불가** — 코드·CI 레벨만 확인, 실기기/CI 필요.
+
 ## 2026-07-08 · dev — macOS 배포: 크로스플랫폼 런타임 코드
 - **테스트한 항목** (`tests/test_platform.py`, sys.platform 목킹):
   - `config._default_app_dir`: Windows(%APPDATA% 유지)/macOS(Library/Application Support)/

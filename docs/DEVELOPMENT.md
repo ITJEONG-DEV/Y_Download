@@ -380,7 +380,9 @@ git push origin v1.2.0
 - [x] 다운로드 취소 버튼 — 진행 중 `전체 다운로드` 버튼이 `취소`로 바뀜. 클릭 시 진행률 훅에서
   `DownloadCancelled`를 던져 yt-dlp를 중단하고 남은 큐를 멈춤(미처리 항목 '취소됨' 표시, 내역 미기록).
   취소는 yt-dlp가 다른 예외로 감쌀 수 있어 `self._cancel` 플래그로도 판정. GUI 테스트 추가.
-- [ ] 앱 아이콘(`assets/app.ico`) 제작 후 빌드에 반영
+- [x] 앱 아이콘 제작·반영 — `assets/make_icon.py`(PIL)로 '둥근 빨강 사각형 + 흰색 다운로드 화살표'
+  아이콘 생성: `app.ico`(멀티사이즈, Windows) / `app.icns`(macOS) / `app.png`(마스터). build.py가
+  OS별로 자동 적용(`--icon`). **빌드한 lite exe에서 아이콘 임베드 확인**(32px에서도 글리프 선명).
 - [~] full 배포 용량 축소 검토 — **구성 분석 후 안전한 축소 적용**. 로컬 full dist(585MB) 구성:
   ffmpeg 415MB(로컬은 full ffmpeg, **CI는 essentials라 더 작음**) / PySide6 93MB(Qt Essentials,
   Addons·QtWebEngine 미포함 — 양호) / **numpy ~27MB(앱 미사용)** / PIL 11MB / 파이썬런타임 등.

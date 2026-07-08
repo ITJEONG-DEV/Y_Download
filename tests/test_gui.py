@@ -212,3 +212,40 @@ def test_history_item_collapsed_one_line_and_buttons(qapp, main, isolated_config
     # 삭제 → 0건
     panel.delete(row.eid)
     assert panel.list.count() == 0
+
+
+def test_history_open_folder(qapp, main, isolated_config, monkeypatch, tmp_path):
+    import app as app_qt
+    save_dir = str(tmp_path)
+    # add_history는 최신을 맨 앞(index 0)에 넣는다. dir 없는 옛 항목을 먼저, dir 있는 항목을 나중에
+    # 추가해 index 0 = dir 있는 최신 항목이 되게 한다.
+    isolated_config.add_history({"title": "옛항목", "filename": "old", "status": "성공",
+                                 "kind": "영상", "ext": "mp4", "quality": "720p (HD)",
+                                 "timestamp": "2026-07-08 09:00", "message": ""})  # dir 없음
+    isolated_config.add_history({"title": "영상B", "filename": "fileB", "status": "성공",
+                                 "kind": "영상", "ext": "mp4", "quality": "720p (HD)",
+                                 "timestamp": "2026-07-08 10:00", "message": "", "dir": save_dir})
+    main.toggle_history()
+    qapp.processEvents()
+    panel = main.history_panel
+
+    opened = {}
+    monkeypatch.setattr(app_qt, "_open_in_file_manager", lambda p: opened.setdefault("path", p))
+
+    # 최신(index 0) = dir 있는 항목 → 폴더 열림
+    row0 = panel.list.itemWidget(panel.list.item(0))
+    assert row0.save_dir == save_dir
+    panel.open_dir(row0.save_dir)
+    assert opened["path"] == save_dir
+
+    # dir 없는 옛 항목 → 열지 않고 안내만
+    opened.clear()
+    row1 = panel.list.itemWidget(panel.list.item(1))
+    assert row1.save_dir == ""
+    panel.open_dir(row1.save_dir)
+    assert "path" not in opened
+    assert "정보가 없는" in main.status_label.text()
+
+    # 존재하지 않는 폴더 → 안내
+    main.open_history_dir(str(tmp_path / "nope"))
+    assert "찾을 수 없" in main.status_label.text()

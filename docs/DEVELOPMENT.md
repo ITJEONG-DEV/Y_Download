@@ -382,7 +382,9 @@ git push origin v1.2.0
   취소는 yt-dlp가 다른 예외로 감쌀 수 있어 `self._cancel` 플래그로도 판정. GUI 테스트 추가.
 - [ ] 앱 아이콘(`assets/app.ico`) 제작 후 빌드에 반영
 - [ ] full 배포 용량 축소 검토 (ffmpeg essentials 빌드로 교체 시 ~85MB)
-- [ ] (선택) 내역에 저장 경로/파일명 저장해 "폴더 열기" 기능
+- [x] 내역에 저장 폴더 기록 + **"폴더 열기"** — 내역 항목에 `dir`(저장 폴더)을 저장하고, 각 항목에
+  📂 버튼 추가(크로스플랫폼 `_open_in_file_manager` 사용). 폴더 정보 없는 옛 항목은 버튼 비활성,
+  폴더가 사라졌으면 안내만. `MainWindow.open_history_dir`, GUI 테스트 추가.
 
 ### 크기 추정 정확도 메모
 - `estimate_size`는 filesize가 없으면 tbr(평균 비트레이트)×길이로 근사 → 실제와 오차 가능.

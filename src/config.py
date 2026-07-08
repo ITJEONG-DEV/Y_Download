@@ -144,7 +144,7 @@ def add_history(entry: dict) -> None:
     """
     다운로드 시도 1건을 내역 맨 앞에 추가한다. 고유 id를 자동 부여한다.
     entry 예시 키: url, title, filename, kind, ext, quality, status('성공'/'실패'),
-                  message, timestamp(문자열)
+                  message, timestamp(문자열), dir(저장 폴더 — 내역 '폴더 열기'용)
     """
     entry.setdefault("id", uuid.uuid4().hex)
     history = load_history()

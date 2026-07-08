@@ -403,6 +403,13 @@ class HistoryRow(QWidget):
         self.title_lbl = ElidedLabel()
         self.title_lbl.setWordWrap(False)  # 접힘 기본: 1줄 축약
         top.addWidget(self.title_lbl, 1)
+        self.save_dir = entry.get("dir") or ""
+        open_btn = QPushButton("📂")
+        open_btn.setFixedSize(26, 24)
+        open_btn.setToolTip("저장 폴더 열기")
+        # 저장 폴더 정보가 있을 때만 활성화(옛 내역은 dir이 없어 비활성)
+        open_btn.setEnabled(bool(self.save_dir))
+        open_btn.clicked.connect(lambda: panel.open_dir(self.save_dir))
         add_btn = QPushButton("＋")
         add_btn.setFixedSize(26, 24)
         add_btn.setToolTip("다운로드 목록에 다시 추가")
@@ -412,6 +419,7 @@ class HistoryRow(QWidget):
         del_btn.setStyleSheet("background:#c0392b; color:white;")
         del_btn.setToolTip("이 내역 삭제")
         del_btn.clicked.connect(lambda: panel.delete(self.eid))
+        top.addWidget(open_btn, 0, Qt.AlignTop)
         top.addWidget(add_btn, 0, Qt.AlignTop)
         top.addWidget(del_btn, 0, Qt.AlignTop)
         v.addLayout(top)
@@ -529,6 +537,9 @@ class HistoryPanel(QWidget):
     def readd(self, url):
         if url:
             self.main.add_url(url)
+
+    def open_dir(self, path):
+        self.main.open_history_dir(path)
 
     def delete(self, eid):
         config.delete_history(eid)
@@ -944,6 +955,19 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self._set_status(f"폴더 열기 실패: {e}")
 
+    def open_history_dir(self, path):
+        """내역 항목의 저장 폴더를 연다(없으면 안내). 다운로드 폴더와 달리 새로 만들지 않는다."""
+        if not path:
+            self._set_status("저장 폴더 정보가 없는 내역입니다.")
+            return
+        if not os.path.isdir(path):
+            self._set_status(f"폴더를 찾을 수 없습니다: {path}")
+            return
+        try:
+            _open_in_file_manager(path)
+        except Exception as e:
+            self._set_status(f"폴더 열기 실패: {e}")
+
     def _on_conflict_change(self, _=0):
         config.set_conflict_policy(self._conflict_policy())
 
@@ -1040,7 +1064,7 @@ class MainWindow(QMainWindow):
                 status, message = "실패", friendly_error(e)
                 self._post(lambda r=row: r.set_status("실패", "#e57373"))
                 self._post(lambda m=message: self._set_status(f"실패: {m}"))
-            self._record_history(job, params, status, message, saved_name)
+            self._record_history(job, params, status, message, saved_name, out_dir)
 
         if cancelled:
             # 처리 못한 항목(현재 포함 이후 전부)을 '취소됨'으로 표시
@@ -1059,7 +1083,7 @@ class MainWindow(QMainWindow):
         elif d.get("status") == "finished":
             self._post(lambda: row.set_status("변환 중...", "#3d8fd6"))
 
-    def _record_history(self, job, params, status, message, saved_name=None):
+    def _record_history(self, job, params, status, message, saved_name=None, out_dir=None):
         eid = uuid.uuid4().hex
         thumb = self._save_thumb(eid, job.get("thumb_url"))
         entry = {
@@ -1069,6 +1093,7 @@ class MainWindow(QMainWindow):
             "ext": params["ext"], "quality": job["quality"],
             "status": status, "message": message[:120],
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"), "thumb": thumb,
+            "dir": out_dir or "",  # 저장 폴더(내역에서 '폴더 열기'용)
         }
         config.add_history(entry)
 

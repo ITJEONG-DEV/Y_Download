@@ -15,6 +15,16 @@
 
 ---
 
+## 2026-07-08 · dev — qtbot E2E(클릭-투-엔드 + 실제 다운로드) 추가
+- **테스트한 항목**:
+  - `pytest-qt` 도입, `e2e` 마커 추가(`pyproject.toml`, 기본 실행에서 제외).
+  - (gui) `test_click_through_download`: URL 타이핑→[목록에 추가]→[전체 다운로드]를 실제
+    마우스/키 이벤트로 조작(다운로드는 목킹). 완료 상태·행 상태·내역 성공 기록까지 검증.
+  - (e2e) `test_real_download_end_to_end`: 실제 유튜브에서 UI 조작으로 음원 다운로드→파일 생성 확인.
+- **결과**: 54 passed, 3 deselected(network 2 + e2e 1). `pytest -m e2e` 단독 실행 시 1 passed(실다운로드).
+- **미흡 → 개선**: 기존 e2e 대상 영상 `BaW_jenozKc`가 유튜브에서 내려가(Video unavailable) 30s
+  타임아웃 → 안정적인 유튜브 최초 영상 `jNQXAC9IVRw`("Me at the zoo", 19초)로 교체해 통과(4.8s).
+
 ## 2026-07-08 · feature/qt-migration (M4) → v0.2.0 — 전환 마무리·배포
 - **테스트한 항목**:
   - 모듈 스왑(CTk `app.py` 제거, Qt를 `app.py`로) 후 **전체 회귀** 실행

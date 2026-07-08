@@ -10,8 +10,12 @@ Y_Downloader 의 자동 테스트 구조 · 실행 방법 · 규칙을 정리한
 | 계층 | 대상 | 마커 | 기본 실행 | 특징 |
 |------|------|------|:--------:|------|
 | ① 단위 | 순수 로직 (downloader/config/updater) | 없음 | ✅ | 네트워크·GUI 없음, 매우 빠름 |
-| ② GUI 스모크 | 실제 Tk 위젯 경로 (app) | `gui` | ✅ | 창을 띄우되 사용자 없이 검증, 네트워크 목킹 |
+| ② GUI 스모크 | 실제 Qt(PySide6) 위젯 경로 (app) | `gui` | ✅ | 창을 띄우되 사용자 없이 검증, 네트워크 목킹 |
 | ③ 통합 | 실제 yt-dlp/유튜브 | `network` | ❌(수동) | 느리고 외부 상태 의존 |
+| ④ E2E | qtbot으로 UI 조작 → 실제 다운로드 | `e2e` | ❌(수동) | 실제 유튜브에서 UI 클릭으로 파일 생성까지 확인 |
+
+> ②의 클릭-투-엔드(목킹) 케이스는 `e2e` 마커 없이 `gui`로 기본 실행된다. `e2e` 마커는
+> **실제 네트워크·다운로드**가 필요한 종단 케이스에만 붙어 기본 실행에서 빠진다.
 
 - 테스트 러너: **pytest** (`requirements-dev.txt`)
 - 설정: 루트 `pyproject.toml` 의 `[tool.pytest.ini_options]`
@@ -37,6 +41,9 @@ pytest -m gui
 # 통합(네트워크) 테스트만 — 유튜브 접속 필요, 가끔 수동 확인
 pytest -m network
 
+# E2E(실제 다운로드)만 — qtbot이 UI를 조작해 유튜브에서 실제 파일 생성까지 확인
+pytest -m e2e
+
 # 특정 파일/테스트
 pytest tests/test_downloader.py
 pytest tests/test_downloader.py::test_sanitize_filename
@@ -56,8 +63,8 @@ tests/
 ├── test_downloader.py    # ① 파일명 정리/URL 판별/크기추정/유니크이름/재생목록 파싱
 ├── test_config.py        # ① 설정·내역 JSON 저장(임시 폴더 격리)
 ├── test_updater.py       # ① 버전 비교·요약 추출·자산 선택(네트워크 목킹)
-├── test_gui.py           # ② (CTk) 재생목록 추가/개별조회/단일추가/팝업 중앙배치
-├── test_gui_qt.py        # ② (Qt) 목록 추가/삭제/내역 패널 토글·폭확장·1줄축약
+├── test_gui.py           # ② (Qt) 목록 추가/삭제/내역 패널 토글·폭확장·1줄축약
+├── test_e2e_qt.py        # ②④ qtbot 클릭-투-엔드(목킹, gui) + 실제 다운로드(e2e)
 └── test_network.py       # ③ 실제 fetch_info / fetch_playlist
 ```
 
@@ -76,6 +83,10 @@ tests/
   `app` 픽스처를 공유하고 `_reset_rows` 로 상태만 초기화한다.
 - **비동기(스레드) 검증은 `_pump_until`** 헬퍼로 실제 `mainloop` 을 돌려 완료를 기다린다.
   (백그라운드 워커가 `self.after` 로 결과를 돌려주므로 mainloop 이 돌아야 반영된다.)
+- **UI 조작(클릭/키입력)은 `qtbot`(pytest-qt)** 으로 재현한다. `qtbot.keyClicks`(타이핑)·
+  `qtbot.mouseClick`(클릭)·`qtbot.waitUntil`(비동기 완료 대기)를 쓴다. `test_e2e_qt.py` 참고.
+- **실제 네트워크·다운로드가 필요한 종단 케이스는 `@pytest.mark.e2e`** 로 표시해 기본 실행에서
+  뺀다(`pytest -m e2e` 로만 수동 실행). 안정적인 공개 영상(예: 유튜브 최초 영상)을 사용한다.
 - 디스플레이가 없으면 GUI 픽스처가 자동 `skip` 한다(실패 아님).
 
 ---

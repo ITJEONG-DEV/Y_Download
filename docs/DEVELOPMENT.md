@@ -327,7 +327,9 @@ git push origin v1.2.0
   - 자동 업데이트(`updater.py`)의 교체 스크립트가 PowerShell 기반 → macOS는 shell 스크립트 별도 필요.
   - 유니버설(arm64+x86_64) 또는 아키텍처별 2종 배포 결정.
 - [ ] (후순위) 다운로드 목록 상단 **포맷/확장자/품질 일괄 변경** 바 (재생목록 대량 추가 대비). Qt(app_qt.py)에 구현 예정.
-- [ ] **실제 다운로드 최종 검증** (full/lite exe에서 영상·음원 다운로드까지 확인)
+- [~] **실제 다운로드 최종 검증** — dev 모드 UI 종단 다운로드는 **qtbot E2E로 자동화**
+  (`tests/test_e2e_qt.py::test_real_download_end_to_end`, `pytest -m e2e`). 남은 것: full/lite
+  **exe 산출물**에서의 실제 영상·음원 다운로드 수동 확인.
 - [ ] 예외 처리 다듬기 (잘못된 URL, 지역제한, 네트워크 오류 메시지 한글화)
 - [ ] 다운로드 취소 버튼
 - [ ] 앱 아이콘(`assets/app.ico`) 제작 후 빌드에 반영

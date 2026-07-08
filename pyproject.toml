@@ -4,8 +4,9 @@ minversion = "7.0"
 pythonpath = ["src"]
 testpaths = ["tests"]
 # 기본 실행은 네트워크 테스트를 제외한다(빠르고 안정적). 전체는 아래 마커로 선택 실행.
-addopts = "-m 'not network' -ra --durations=10"
+addopts = "-m 'not network and not e2e' -ra --durations=10"
 markers = [
-    "gui: 실제 Tk 창을 띄우는 GUI 스모크 테스트 (디스플레이 필요)",
+    "gui: 실제 창을 띄우는 GUI 스모크/상호작용 테스트 (디스플레이 필요)",
     "network: 실제 네트워크/유튜브 접속이 필요한 통합 테스트 (평소 CI 제외)",
+    "e2e: qtbot으로 UI를 조작해 실제 다운로드까지 하는 종단 테스트 (느림, 기본 제외)",
 ]

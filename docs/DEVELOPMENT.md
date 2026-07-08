@@ -330,7 +330,10 @@ git push origin v1.2.0
 - [~] **실제 다운로드 최종 검증** — dev 모드 UI 종단 다운로드는 **qtbot E2E로 자동화**
   (`tests/test_e2e_qt.py::test_real_download_end_to_end`, `pytest -m e2e`). 남은 것: full/lite
   **exe 산출물**에서의 실제 영상·음원 다운로드 수동 확인.
-- [ ] 예외 처리 다듬기 (잘못된 URL, 지역제한, 네트워크 오류 메시지 한글화)
+- [x] 예외 처리 다듬기 — yt-dlp/네트워크 예외를 사용자용 한글 메시지로 변환
+  (`downloader.friendly_error`: 삭제/비공개/지역제한/연령제한/멤버십/429/타임아웃/DNS/연결/ffmpeg/403/권한/디스크).
+  원인 체인(`__cause__`)까지 살펴 더 구체적인 메시지를 고르고, 알려지지 않은 오류는 ANSI·`ERROR:`
+  접두어를 걷어내 한 줄로 노출. `app.py`의 조회/재생목록/다운로드 실패 표시에 적용. 단위 테스트 추가.
 - [ ] 다운로드 취소 버튼
 - [ ] 앱 아이콘(`assets/app.ico`) 제작 후 빌드에 반영
 - [ ] full 배포 용량 축소 검토 (ffmpeg essentials 빌드로 교체 시 ~85MB)

@@ -120,7 +120,8 @@ tests/
 ## 7. 현재 커버리지 요약
 
 - **downloader**: `sanitize_filename`, `is_playlist_url`, `format_size`, `estimate_size`
-  (영상/음원/폴백), `_stream_size`, `_uniquify`, 중복정책 상수, `fetch_playlist`(정규화·필터).
+  (영상/음원/폴백), `_stream_size`, `_uniquify`, 중복정책 상수, `fetch_playlist`(정규화·필터),
+  `friendly_error`(예외→한글 매핑·원인체인·미지 오류 정리).
 - **config**: 설정 라운드트립, 중복정책, 항목 기본값, 창 상태, 내역 추가/순서/삭제/전체삭제/보관한도.
 - **updater**: 버전 파싱·비교, 변경요약 추출(마커 유무), 자산 선택, `check_update`(신규/동일/구버전/빈태그),
   `build_kind`, 교체 스크립트 생성.

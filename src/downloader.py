@@ -261,6 +261,88 @@ def estimate_size(
     return vsize + info.best_audio_size
 
 
+# ---------------------------------------------------------------------------
+# 예외 메시지 한글화
+# ---------------------------------------------------------------------------
+# yt-dlp/네트워크 예외의 원문(영문)에서 찾을 패턴 → 사용자용 한글 메시지.
+# 위에서부터 순서대로 검사하므로 더 구체적인 패턴을 앞에 둔다. (소문자 기준 부분일치)
+_ERROR_PATTERNS: list[tuple[tuple[str, ...], str]] = [
+    (("sign in to confirm your age", "age-restricted", "inappropriate for some users"),
+     "연령 제한이 걸린 영상이라 다운로드할 수 없습니다."),
+    (("private video",),
+     "비공개 영상이라 다운로드할 수 없습니다."),
+    (("members-only", "join this channel", "available to this channel's members"),
+     "채널 멤버십 전용 영상이라 다운로드할 수 없습니다."),
+    (("not available in your country", "not available from your location",
+      "blocked it in your country", "geo restricted", "georestricted"),
+     "지역 제한으로 이 영상은 현재 위치에서 다운로드할 수 없습니다."),
+    (("this live event will begin", "premieres in", "premiere will begin",
+      "live event will begin in"),
+     "아직 공개되지 않은(예정/프리미어) 영상입니다. 공개 후 다시 시도해 주세요."),
+    (("removed for violating", "account associated with this video has been terminated",
+      "video has been removed"),
+     "삭제된 영상이라 다운로드할 수 없습니다."),
+    (("video unavailable", "this video is unavailable", "is not available"),
+     "영상을 사용할 수 없습니다. 삭제되었거나 비공개일 수 있습니다."),
+    (("too many requests", "http error 429", "rate-limit", "rate limit"),
+     "요청이 많아 유튜브가 일시적으로 차단했습니다. 잠시 후 다시 시도해 주세요."),
+    # 네트워크 계열은 "unable to download webpage" 같은 일반 오류보다 먼저 판정한다.
+    (("timed out", "timeout", "read operation timed out"),
+     "네트워크 응답 시간이 초과되었습니다. 인터넷 연결을 확인한 뒤 다시 시도해 주세요."),
+    (("failed to resolve", "getaddrinfo failed", "name or service not known",
+      "temporary failure in name resolution", "nodename nor servname",
+      "no address associated with hostname"),
+     "인터넷에 연결할 수 없습니다. 네트워크 연결을 확인해 주세요."),
+    (("connection refused", "connection reset", "connection aborted",
+      "network is unreachable", "connection error", "urlopen error"),
+     "네트워크 연결에 실패했습니다. 인터넷 연결을 확인한 뒤 다시 시도해 주세요."),
+    (("ffmpeg not found", "ffprobe not found", "ffmpeg is not installed",
+      "you have requested merging", "postprocessing: ffmpeg"),
+     "ffmpeg를 찾을 수 없어 변환/병합에 실패했습니다. ffmpeg를 설치하거나 bin 폴더에 넣어 주세요."),
+    (("unsupported url", "is not a valid url", "unable to download webpage",
+      "no video formats found", "unable to extract"),
+     "지원하지 않는 URL이거나 주소 형식이 올바르지 않습니다. 유튜브 링크를 확인해 주세요."),
+    (("http error 403", "forbidden"),
+     "유튜브가 접근을 거부했습니다(403). 잠시 후 다시 시도하거나 yt-dlp를 최신 버전으로 갱신해 주세요."),
+    (("permission denied", "access is denied", "errno 13"),
+     "저장 폴더에 쓸 권한이 없습니다. 다른 폴더를 선택해 주세요."),
+    (("no space left", "errno 28", "disk full"),
+     "저장 공간이 부족합니다. 여유 공간을 확보한 뒤 다시 시도해 주세요."),
+]
+
+# ANSI 색상 코드 및 yt-dlp의 "ERROR: " 접두어 제거용
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_PREFIX_RE = re.compile(r"^\s*(ERROR|WARNING)\s*:\s*", re.IGNORECASE)
+
+
+def friendly_error(exc: object) -> str:
+    """
+    yt-dlp/네트워크 예외를 사용자용 한글 메시지로 변환한다.
+    알려진 패턴에 걸리면 안내 문구를, 아니면 원문을 정리해 그대로 돌려준다.
+    (yt-dlp 예외는 흔히 다른 예외를 감싸므로 __cause__ 원문까지 함께 살핀다.)
+    """
+    parts: list[str] = []
+    seen = set()
+    cur = exc
+    for _ in range(5):  # 원인 체인을 따라가며 텍스트 수집 (무한루프 방지 상한)
+        if cur is None or id(cur) in seen:
+            break
+        seen.add(id(cur))
+        parts.append(str(cur))
+        cur = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
+
+    raw = " ".join(parts)
+    low = raw.lower()
+    for needles, message in _ERROR_PATTERNS:
+        if any(n in low for n in needles):
+            return message
+
+    # 알려지지 않은 오류: 원문에서 ANSI/접두어를 걷어내고 그대로 노출(한 줄).
+    cleaned = _ANSI_RE.sub("", str(exc)).strip()
+    cleaned = _PREFIX_RE.sub("", cleaned).splitlines()[0] if cleaned else ""
+    return cleaned or "알 수 없는 오류가 발생했습니다."
+
+
 def format_size(num_bytes: Optional[int]) -> str:
     """bytes를 사람이 읽기 쉬운 문자열로 (예: '45.3 MB'). None이면 '알 수 없음'."""
     if not num_bytes:

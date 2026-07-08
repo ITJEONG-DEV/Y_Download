@@ -103,6 +103,42 @@ def test_conflict_policies():
     assert "mp4" in d.VIDEO_EXTS and "mp3" in d.AUDIO_EXTS
 
 
+# --------------------------------------------------------------- friendly_error
+@pytest.mark.parametrize("raw, expected_substr", [
+    ("ERROR: [youtube] abc: Video unavailable", "사용할 수 없"),
+    ("Private video. Sign in if you've been granted access", "비공개"),
+    ("This video is not available in your country", "지역 제한"),
+    ("Sign in to confirm your age", "연령 제한"),
+    ("This video is available to this channel's members", "멤버십"),
+    ("ERROR: HTTP Error 429: Too Many Requests", "잠시 후"),
+    ("Unsupported URL: httpz://bad", "지원하지 않는 URL"),
+    ("The read operation timed out", "시간이 초과"),
+    ("<urlopen error [Errno 11001] getaddrinfo failed>", "인터넷에 연결"),
+    ("HTTP Error 403: Forbidden", "403"),
+])
+def test_friendly_error_known_patterns(raw, expected_substr):
+    assert expected_substr in d.friendly_error(Exception(raw))
+
+
+def test_friendly_error_strips_ansi_and_prefix_for_unknown():
+    msg = d.friendly_error(Exception("\x1b[0;31mERROR:\x1b[0m 뭔가 이상한 실패\n둘째 줄"))
+    # 알려지지 않은 오류는 원문을 정리(색상코드·ERROR 접두어·둘째 줄 제거)해 그대로 노출
+    assert msg == "뭔가 이상한 실패"
+
+
+def test_friendly_error_follows_cause_chain():
+    # yt-dlp DownloadError 가 실제 원인(TimeoutError)을 감싸는 상황을 모사
+    inner = TimeoutError("The read operation timed out")
+    outer = Exception("ERROR: Unable to download webpage")
+    outer.__cause__ = inner
+    # 원인 체인까지 살펴 더 구체적인(타임아웃) 메시지를 고른다
+    assert "시간이 초과" in d.friendly_error(outer)
+
+
+def test_friendly_error_empty_fallback():
+    assert d.friendly_error(Exception("")) == "알 수 없는 오류가 발생했습니다."
+
+
 # --------------------------------------------------------------- fetch_playlist (yt_dlp 목킹)
 def test_fetch_playlist_normalizes_and_filters(monkeypatch):
     FakeYDL.result = {

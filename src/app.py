@@ -38,7 +38,7 @@ import updater
 from downloader import (
     VideoInfo, PlaylistEntry,
     fetch_info, fetch_playlist, is_playlist_url, download,
-    sanitize_filename, estimate_size, format_size,
+    sanitize_filename, estimate_size, format_size, friendly_error,
     VIDEO_EXTS, AUDIO_EXTS, CONFLICT_POLICIES,
 )
 
@@ -672,7 +672,7 @@ class MainWindow(QMainWindow):
         if request_id != self._add_request_id:
             return
         self._finish_add_request()
-        self._set_status(f"조회 실패: {err}")
+        self._set_status(f"조회 실패: {friendly_error(err)}")
 
     # 재생목록
     def _start_playlist_add(self, url: str):
@@ -691,7 +691,7 @@ class MainWindow(QMainWindow):
 
     def _on_playlist_error(self, err: Exception, url: str):
         self._finish_add_request()
-        self._set_status(f"재생목록 조회 실패, 단일 영상으로 시도: {err}")
+        self._set_status(f"재생목록 조회 실패, 단일 영상으로 시도: {friendly_error(err)}")
         self._start_single_add(url)
 
     def _on_playlist_fetched(self, url: str, result):
@@ -882,7 +882,7 @@ class MainWindow(QMainWindow):
                 else:
                     self._post(lambda r=row: r.set_status("완료 ✓", "#4caf50"))
             except Exception as e:
-                status, message = "실패", str(e)
+                status, message = "실패", friendly_error(e)
                 self._post(lambda r=row: r.set_status("실패", "#e57373"))
                 self._post(lambda m=message: self._set_status(f"실패: {m}"))
             self._record_history(job, params, status, message, saved_name)

@@ -174,13 +174,15 @@ def test_history_toggle_and_widen(qapp, main, isolated_config):
     main.toggle_history()
     qapp.processEvents()
     assert main.history_dock.isVisible()
-    assert main.geometry().width() == w0 + app_qt.HISTORY_PANEL_WIDTH  # 창모드 폭 확장
+    # 창모드 폭 확장 — 좁은 화면(CI 등)에선 요청 폭이 화면에 맞게 클램프될 수 있으므로
+    # '패널폭만큼(그 이하로) 넓어졌는지'로 검증한다.
+    assert w0 < main.geometry().width() <= w0 + app_qt.HISTORY_PANEL_WIDTH
     assert main.history_panel.list.count() == 1
 
     main.toggle_history()
     qapp.processEvents()
     assert not main.history_dock.isVisible()
-    assert main.geometry().width() == w0  # 원복
+    assert main.geometry().width() == w0  # 열기 전 폭으로 정확히 원복
 
 
 def test_history_item_collapsed_one_line_and_buttons(qapp, main, isolated_config):

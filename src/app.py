@@ -1118,14 +1118,21 @@ class MainWindow(QMainWindow):
         if self.isMaximized() or self.isFullScreen():
             return
         g = self.geometry()
-        delta = HISTORY_PANEL_WIDTH if direction > 0 else -HISTORY_PANEL_WIDTH
-        new_w = max(600, g.width() + delta)
-        x = g.x()
-        scr = self.screen().availableGeometry() if self.screen() else None
-        # 오른쪽으로 넘치면 창을 왼쪽으로 밀어 화면 안에 유지
-        if scr is not None and direction > 0 and x + new_w > scr.right():
-            x = max(scr.left(), scr.right() - new_w + 1)
-        self.setGeometry(x, g.y(), new_w, g.height())
+        if direction > 0:
+            # 열기 전 폭을 기억한다(좁은 화면이면 요청 폭이 화면에 맞게 클램프될 수 있으므로,
+            # 닫을 때 '현재 폭 - 패널폭'으로 계산하면 원복이 틀어진다).
+            self._pre_panel_width = g.width()
+            new_w = g.width() + HISTORY_PANEL_WIDTH
+            x = g.x()
+            scr = self.screen().availableGeometry() if self.screen() else None
+            # 오른쪽으로 넘치면 창을 왼쪽으로 밀어 화면 안에 유지
+            if scr is not None and x + new_w > scr.right():
+                x = max(scr.left(), scr.right() - new_w + 1)
+            self.setGeometry(x, g.y(), new_w, g.height())
+        else:
+            # 닫기: 열기 전 폭으로 정확히 복원(클램프 여부와 무관).
+            target = getattr(self, "_pre_panel_width", max(600, g.width() - HISTORY_PANEL_WIDTH))
+            self.setGeometry(g.x(), g.y(), target, g.height())
 
     # ------------------------------------------------------ 자동 업데이트
     def _start_update_check(self):

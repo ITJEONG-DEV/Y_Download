@@ -15,6 +15,16 @@
 
 ---
 
+## 2026-07-08 · dev — CI 그린화(v0.3.0 릴리스 게이트)
+- **테스트한 항목**: v0.3.0 태그 push → Release/Tests 워크플로 실패 원인 추적(CI 로그 확인).
+- **결과**: 86 passed, 3 deselected(로컬). CI 실패 2건 수정.
+- **미흡 → 개선**:
+  - `test.yml`/`release.yml`가 `-m "not network"`로 pyproject 기본값을 덮어써 **e2e 실다운로드
+    테스트가 CI에서 실행**(ffmpeg 없음·유튜브 봇차단)→ `-m "not network and not e2e"`로 수정.
+  - `test_history_toggle_and_widen`가 **좁은 화면(CI≈1024px)에서 창이 목표폭까지 못 늘어**(1028≠1200)
+    실패 → 근본은 `_grow_width` 닫기 로직이 '현재폭-패널폭'이라 클램프 시 원복이 틀어지는 **잠재 버그**.
+    열기 전 폭을 기억해 정확히 원복하도록 고치고, 테스트는 클램프 허용(넓어짐 범위)으로 견고화.
+
 ## 2026-07-08 · dev — macOS 배포: build.py/CI/updater (서명 제외)
 - **테스트한 항목**:
   - (단위) `updater`: `_asset_url`의 `mac` zip 선택(dmg 제외), `build_kind`=='mac'(darwin+frozen),

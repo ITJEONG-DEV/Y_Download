@@ -383,14 +383,15 @@ git push origin v1.2.0
 - [x] 앱 아이콘 제작·반영 — `assets/make_icon.py`(PIL)로 '둥근 빨강 사각형 + 흰색 다운로드 화살표'
   아이콘 생성: `app.ico`(멀티사이즈, Windows) / `app.icns`(macOS) / `app.png`(마스터). build.py가
   OS별로 자동 적용(`--icon`). **빌드한 lite exe에서 아이콘 임베드 확인**(32px에서도 글리프 선명).
-- [~] full 배포 용량 축소 검토 — **구성 분석 후 안전한 축소 적용**. 로컬 full dist(585MB) 구성:
+- [x] full 배포 용량 축소 — **구성 분석 후 안전한 축소 적용, v0.3.1 CI에서 실측 확인**
+  (full 137.3→128.4MB, lite 62.4→53.8MB, mac dmg 92.2→83.1MB, mac zip 83.5→75.1MB, 각 ~8~9MB↓).
+  로컬 full dist(585MB) 구성:
   ffmpeg 415MB(로컬은 full ffmpeg, **CI는 essentials라 더 작음**) / PySide6 93MB(Qt Essentials,
   Addons·QtWebEngine 미포함 — 양호) / **numpy ~27MB(앱 미사용)** / PIL 11MB / 파이썬런타임 등.
   - 적용: `build.py --exclude-module numpy,tkinter,test,unittest,pydoc_data`(numpy ~27MB 제거,
     빌드 exe 기동 검증), `requirements.txt`를 `PySide6-Essentials`로(Addons 설치/번들 차단).
   - **지배적 요인은 ffmpeg** — CI는 이미 essentials 사용. 더 줄이려면 ffprobe 제외(yt-dlp 일부 기능
     저하 위험)나 UPX 압축(AV 오탐·기동 지연 위험)이 필요해 **안정성 우선으로 보류**.
-  - 남은 것: 다음 릴리스 CI 빌드에서 실제 zip 용량 감소(≈numpy분 압축 ~8~12MB) 확인.
 - [x] 내역에 저장 폴더 기록 + **"폴더 열기"** — 내역 항목에 `dir`(저장 폴더)을 저장하고, 각 항목에
   📂 버튼 추가(크로스플랫폼 `_open_in_file_manager` 사용). 폴더 정보 없는 옛 항목은 버튼 비활성,
   폴더가 사라졌으면 안내만. `MainWindow.open_history_dir`, GUI 테스트 추가.

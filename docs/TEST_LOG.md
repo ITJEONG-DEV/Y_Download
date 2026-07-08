@@ -15,6 +15,16 @@
 
 ---
 
+## 2026-07-08 · dev — full 배포 용량 축소(numpy 제외 등)
+- **테스트한 항목**:
+  - 로컬 full 빌드 구성 측정(`du`) → numpy(.libs) ~27MB가 앱 미사용인데 번들됨을 확인.
+  - `build.py`에 `--exclude-module numpy,tkinter,test,unittest,pydoc_data` 적용 후 재빌드 →
+    numpy 완전 제거(dist 585→557MB), **빌드된 full exe 5초 기동 스모크 통과**(numpy 없이 정상).
+  - `requirements.txt` → `PySide6-Essentials`(Addons 미설치).
+  - 전체 회귀: 87 passed, 3 deselected(소스 테스트는 빌드 변경 무관, 그대로 그린).
+- **미흡 → 개선**: 지배적 용량은 ffmpeg(CI는 이미 essentials). ffprobe 제외·UPX는 위험이 커 보류.
+  실제 zip 감소치는 다음 릴리스 CI에서 확인 예정.
+
 ## 2026-07-08 · dev — 내역 '폴더 열기' 기능
 - **테스트한 항목** (GUI):
   - dir 있는 최신 내역 → 📂 클릭 시 `_open_in_file_manager`가 그 폴더로 호출됨(목킹 검증).

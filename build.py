@@ -107,6 +107,11 @@ VSVersionInfo(
     return path
 
 
+# 앱이 쓰지 않는데 환경에 설치돼 있어 딸려 들어가는 대형 모듈 — 용량만 키우므로 제외한다.
+# (numpy는 PIL이 import 타임에 끌어오지 않고 우리 코드도 안 쓴다. tkinter는 Qt 전환 후 불필요.)
+_EXCLUDE_MODULES = ["numpy", "tkinter", "test", "unittest", "pydoc_data"]
+
+
 def _common_args() -> list[str]:
     args = [
         SRC,
@@ -122,6 +127,8 @@ def _common_args() -> list[str]:
         "--workpath", os.path.join(ROOT, "build"),
         "--specpath", os.path.join(ROOT, "build"),
     ]
+    for mod in _EXCLUDE_MODULES:
+        args += ["--exclude-module", mod]
     # Windows 버전 리소스는 Windows 전용(--version-file). 다른 OS에선 생략.
     if IS_WIN:
         args += ["--version-file", _write_version_file()]

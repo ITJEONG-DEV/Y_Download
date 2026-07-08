@@ -381,7 +381,14 @@ git push origin v1.2.0
   `DownloadCancelled`를 던져 yt-dlp를 중단하고 남은 큐를 멈춤(미처리 항목 '취소됨' 표시, 내역 미기록).
   취소는 yt-dlp가 다른 예외로 감쌀 수 있어 `self._cancel` 플래그로도 판정. GUI 테스트 추가.
 - [ ] 앱 아이콘(`assets/app.ico`) 제작 후 빌드에 반영
-- [ ] full 배포 용량 축소 검토 (ffmpeg essentials 빌드로 교체 시 ~85MB)
+- [~] full 배포 용량 축소 검토 — **구성 분석 후 안전한 축소 적용**. 로컬 full dist(585MB) 구성:
+  ffmpeg 415MB(로컬은 full ffmpeg, **CI는 essentials라 더 작음**) / PySide6 93MB(Qt Essentials,
+  Addons·QtWebEngine 미포함 — 양호) / **numpy ~27MB(앱 미사용)** / PIL 11MB / 파이썬런타임 등.
+  - 적용: `build.py --exclude-module numpy,tkinter,test,unittest,pydoc_data`(numpy ~27MB 제거,
+    빌드 exe 기동 검증), `requirements.txt`를 `PySide6-Essentials`로(Addons 설치/번들 차단).
+  - **지배적 요인은 ffmpeg** — CI는 이미 essentials 사용. 더 줄이려면 ffprobe 제외(yt-dlp 일부 기능
+    저하 위험)나 UPX 압축(AV 오탐·기동 지연 위험)이 필요해 **안정성 우선으로 보류**.
+  - 남은 것: 다음 릴리스 CI 빌드에서 실제 zip 용량 감소(≈numpy분 압축 ~8~12MB) 확인.
 - [x] 내역에 저장 폴더 기록 + **"폴더 열기"** — 내역 항목에 `dir`(저장 폴더)을 저장하고, 각 항목에
   📂 버튼 추가(크로스플랫폼 `_open_in_file_manager` 사용). 폴더 정보 없는 옛 항목은 버튼 비활성,
   폴더가 사라졌으면 안내만. `MainWindow.open_history_dir`, GUI 테스트 추가.

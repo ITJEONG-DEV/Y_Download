@@ -89,6 +89,44 @@ def test_remove_and_clear(qapp, main):
     assert main.empty_label.isVisible()
 
 
+# --------------------------------------------------------------- 일괄 적용 바
+def test_bulk_apply_video_and_audio(qapp, main):
+    from downloader import PlaylistEntry
+    main._add_playlist_entries([PlaylistEntry(url=f"https://www.youtube.com/watch?v=B{i}",
+                                              title=f"임시-{i}", duration=10) for i in range(3)])
+    _pump(qapp, lambda: main._enrich_pending == 0)  # 개별 조회로 해상도[1080,720] 반영
+
+    # 영상 + mkv + 720p 캡 → 모든 행에 반영(각 행 실제 해상도 중 ≤720 최적)
+    main.bulk_kind.setCurrentText("영상")
+    main.bulk_ext.setCurrentText("mkv")
+    main.bulk_quality.setCurrentText("720p (HD)")
+    main.on_apply_bulk()
+    for r in main.rows:
+        p = r.get_params()
+        assert p["kind"] == "video" and p["ext"] == "mkv"
+        assert p["max_height"] == 720
+
+    # 캡(480p)보다 낮은 가용 해상도가 없으면 가장 낮은 해상도(720)로 폴백
+    main.bulk_quality.setCurrentText("480p")
+    main.on_apply_bulk()
+    assert all(r.get_params()["max_height"] == 720 for r in main.rows)
+
+    # 음원 + m4a + 256 → 확장자/품질 목록이 음원용으로 전환되어 반영
+    main.bulk_kind.setCurrentText("음원")
+    main.bulk_ext.setCurrentText("m4a")
+    main.bulk_quality.setCurrentText("256")
+    main.on_apply_bulk()
+    for r in main.rows:
+        p = r.get_params()
+        assert p["kind"] == "audio" and p["ext"] == "m4a" and p["audio_bitrate"] == "256"
+
+
+def test_bulk_apply_empty_list_is_noop(qapp, main):
+    assert main.rows == []
+    main.on_apply_bulk()  # 예외 없이 안내만
+    assert "없습니다" in main.status_label.text()
+
+
 # --------------------------------------------------------------- 내역 패널
 def test_history_toggle_and_widen(qapp, main, isolated_config):
     isolated_config.add_history({"title": "영상A", "filename": "fileA", "status": "성공",

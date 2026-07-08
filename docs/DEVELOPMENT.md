@@ -326,7 +326,10 @@ git push origin v1.2.0
   - `os.startfile`(Windows 전용) 등 플랫폼 종속 코드 분기(macOS는 `open`), 경로/설정 폴더 점검.
   - 자동 업데이트(`updater.py`)의 교체 스크립트가 PowerShell 기반 → macOS는 shell 스크립트 별도 필요.
   - 유니버설(arm64+x86_64) 또는 아키텍처별 2종 배포 결정.
-- [ ] (후순위) 다운로드 목록 상단 **포맷/확장자/품질 일괄 변경** 바 (재생목록 대량 추가 대비). Qt(app_qt.py)에 구현 예정.
+- [x] 다운로드 목록 상단 **포맷/확장자/품질 일괄 변경** 바 (재생목록 대량 추가 대비).
+  URL 바 아래에 `일괄 적용` 바(포맷·확장자·품질 + [전체 적용]) 배치. 영상 품질은 **'≤ 목표 해상도'**
+  로 각 행의 실제 가용 해상도 중 최적을 선택(정확히 일치하지 않아도 됨), 음원은 비트레이트 직접 적용.
+  다운로드 중에는 비활성화. `DownloadRow.apply_bulk` + `MainWindow.on_apply_bulk`, GUI 테스트 추가.
 - [~] **실제 다운로드 최종 검증** — dev 모드 UI 종단 다운로드는 **qtbot E2E로 자동화**
   (`tests/test_e2e_qt.py::test_real_download_end_to_end`, `pytest -m e2e`). 남은 것: full/lite
   **exe 산출물**에서의 실제 영상·음원 다운로드 수동 확인.

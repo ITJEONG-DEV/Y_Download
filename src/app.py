@@ -63,6 +63,17 @@ def _quality_label(h: int) -> str:
     return HEIGHT_LABELS.get(h, f"{h}p")
 
 
+# 일괄 적용 바의 영상 품질 사다리(각 행의 실제 가용 해상도에 '≤ 목표'로 매핑).
+BULK_VIDEO_HEIGHTS = [2160, 1440, 1080, 720, 480, 360, 240, 144]
+BULK_TOP_QUALITY = "최고 화질"  # 상한 없음(각 행에서 가장 높은 해상도 선택)
+
+
+def _height_from_label(label: str) -> int | None:
+    """'1080p (FHD)' → 1080, '최고 화질' 등 숫자가 없으면 None."""
+    digits = "".join(ch for ch in label.split("p")[0] if ch.isdigit())
+    return int(digits) if digits else None
+
+
 def _pixmap_from_bytes(data: bytes | None) -> QPixmap | None:
     """(메인 스레드에서) 이미지 바이트를 썸네일 QPixmap으로. 실패 시 None."""
     if not data:
@@ -282,6 +293,50 @@ class DownloadRow(QWidget):
     def set_status(self, text: str, color: str | None = None):
         self.status_label.setText(text)
         self.status_label.setStyleSheet(f"color:{color};" if color else "color:gray;")
+
+    def apply_bulk(self, kind: str, ext: str | None, quality: str | None):
+        """상단 일괄 바의 포맷(영상/음원)·확장자·품질을 이 행에 반영한다.
+        영상 품질은 '≤ 목표 해상도' 개념으로 각 행의 실제 가용 해상도 중 최적을 고른다
+        (목표에 정확히 일치하는 해상도가 없어도 됨). 신호는 마지막에 한 번만 낸다."""
+        self.kind_menu.blockSignals(True)
+        self.kind_menu.setCurrentText(kind)
+        self.kind_menu.blockSignals(False)
+        if kind == "음원":
+            self._apply_audio_options()
+            self._set_current(self.ext_menu, ext)
+            if quality in AUDIO_BITRATES:
+                self._set_current(self.quality_menu, quality)
+        else:
+            self._apply_video_options()
+            self._set_current(self.ext_menu, ext)
+            self._select_video_quality_for_cap(_height_from_label(quality or ""))
+        self._update_estimate()
+        self._notify_defaults_changed()
+
+    @staticmethod
+    def _set_current(combo: QComboBox, value):
+        """신호를 막고 combo 선택을 value로(목록에 있을 때만)."""
+        if value is None:
+            return
+        items = [combo.itemText(i) for i in range(combo.count())]
+        if value in items:
+            combo.blockSignals(True)
+            combo.setCurrentText(value)
+            combo.blockSignals(False)
+
+    def _select_video_quality_for_cap(self, cap_height: int | None):
+        """영상 품질 메뉴에서 '≤ cap' 중 가장 높은 가용 해상도를 고른다.
+        cap 이하가 없으면 가장 낮은 해상도로, 해상도 정보가 없으면 첫 항목으로."""
+        heights = self.info.available_heights
+        if heights:
+            if cap_height is None:
+                h = max(heights)
+            else:
+                candidates = [x for x in heights if x <= cap_height]
+                h = max(candidates) if candidates else min(heights)
+            self._set_current(self.quality_menu, _quality_label(h))
+        elif self.quality_menu.count():
+            self._set_current(self.quality_menu, self.quality_menu.itemText(0))
 
     def set_controls_enabled(self, enabled: bool):
         for w in (self.name_entry, self.ext_menu, self.kind_menu, self.quality_menu, self.remove_btn):
@@ -525,6 +580,29 @@ class MainWindow(QMainWindow):
         self.history_btn.clicked.connect(self.toggle_history)
         urlbar.addWidget(self.history_btn)
         outer.addLayout(urlbar)
+
+        # 목록 상단: 포맷/확장자/품질 일괄 적용 바
+        bulkbar = QHBoxLayout()
+        bulkbar.addWidget(QLabel("일괄 적용:"))
+        self.bulk_kind = QComboBox()
+        self.bulk_kind.addItems(["영상", "음원"])
+        self.bulk_kind.currentIndexChanged.connect(self._on_bulk_kind_change)
+        bulkbar.addWidget(self.bulk_kind)
+        bulkbar.addWidget(QLabel("확장자:"))
+        self.bulk_ext = QComboBox()
+        self.bulk_ext.setMinimumWidth(84)
+        bulkbar.addWidget(self.bulk_ext)
+        bulkbar.addWidget(QLabel("품질:"))
+        self.bulk_quality = QComboBox()
+        self.bulk_quality.setMinimumWidth(130)
+        bulkbar.addWidget(self.bulk_quality)
+        self.bulk_apply_btn = QPushButton("전체 적용")
+        self.bulk_apply_btn.setToolTip("현재 목록의 모든 항목에 위 설정을 적용합니다.")
+        self.bulk_apply_btn.clicked.connect(self.on_apply_bulk)
+        bulkbar.addWidget(self.bulk_apply_btn)
+        bulkbar.addStretch(1)
+        outer.addLayout(bulkbar)
+        self._populate_bulk_options()  # 초기(영상) 옵션 채우기
 
         # 목록
         self.list_widget = QListWidget()
@@ -771,6 +849,43 @@ class MainWindow(QMainWindow):
         else:
             self._set_status(f"상세 정보 조회 중... ({self._enrich_done}/{total})")
 
+    # ------------------------------------------------------ 일괄 적용 바
+    def _populate_bulk_options(self):
+        """일괄 바의 확장자/품질 목록을 현재 포맷(영상/음원)에 맞게 채운다."""
+        audio = self.bulk_kind.currentText() == "음원"
+        for combo, values, default in (
+            (self.bulk_ext, AUDIO_EXTS if audio else VIDEO_EXTS, None),
+            (self.bulk_quality,
+             AUDIO_BITRATES if audio else [BULK_TOP_QUALITY] + [_quality_label(h) for h in BULK_VIDEO_HEIGHTS],
+             "192" if audio else BULK_TOP_QUALITY),
+        ):
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(values)
+            if default:
+                combo.setCurrentText(default)
+            combo.blockSignals(False)
+
+    def _on_bulk_kind_change(self, _=0):
+        self._populate_bulk_options()
+
+    def on_apply_bulk(self):
+        if self._downloading:
+            return
+        if not self.rows:
+            self._set_status("일괄 적용할 항목이 없습니다.")
+            return
+        kind = self.bulk_kind.currentText()
+        ext = self.bulk_ext.currentText()
+        quality = self.bulk_quality.currentText()
+        for row in self.rows:
+            row.apply_bulk(kind, ext, quality)
+        self._set_status(f"{len(self.rows)}개 항목에 일괄 적용했습니다.")
+
+    def _set_bulk_enabled(self, enabled: bool):
+        for w in (self.bulk_kind, self.bulk_ext, self.bulk_quality, self.bulk_apply_btn):
+            w.setEnabled(enabled)
+
     # ------------------------------------------------------ 목록 편집
     def _on_row_defaults_change(self, defaults: dict):
         self.item_defaults = defaults
@@ -843,6 +958,7 @@ class MainWindow(QMainWindow):
         self.download_btn.setText("다운로드 중...")
         self.add_btn.setEnabled(False)
         self.clear_list_btn.setEnabled(False)
+        self._set_bulk_enabled(False)
         for row in self.rows:
             row.set_controls_enabled(False)
             row.set_status("대기", "gray")
@@ -931,6 +1047,7 @@ class MainWindow(QMainWindow):
         self.download_btn.setText("전체 다운로드")
         self.add_btn.setEnabled(True)
         self.clear_list_btn.setEnabled(True)
+        self._set_bulk_enabled(True)
         for row in self.rows:
             row.set_controls_enabled(True)
         self._set_status(f"완료: {success}/{total}개 다운로드됨")

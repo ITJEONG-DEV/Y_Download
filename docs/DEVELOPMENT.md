@@ -3,8 +3,8 @@
 > 이 문서는 작업을 **언제든 중단하고 재개**할 수 있도록 프로젝트의 목표·구조·진행 상황·다음 할 일을 기록한다.
 > 새 세션을 시작할 때 이 문서를 먼저 읽으면 현재 상태를 파악할 수 있다.
 
-- 최종 수정: 2026-07-03
-- 저장소 경로: `D:\2_GIT\Y_Download`
+- 최종 수정: 2026-07-08
+- 저장소 경로: `F:\Git\Y_Download`
 
 ---
 
@@ -216,25 +216,49 @@ python build.py lite      # 라이트만
 버전은 `src/version.py`의 `__version__`이 단일 소스이며, 앱 창 제목에 `v{버전}`으로 표시된다.
 릴리스는 **Git 태그 push**로 트리거된다 — `.github/workflows/release.yml`(GitHub Actions).
 
-### 릴리스 방법
-```powershell
-git tag v1.0.0
-git push origin v1.0.0     # -> Actions가 자동 빌드 & Release 발행
-```
+### ✅ 릴리스 체크리스트 (매 릴리스 이 순서대로)
 
-### 워크플로 동작 (windows-latest)
-1. Python 3.12 준비 + 의존성/PyInstaller 설치
-2. 태그명(`v1.0.0`)에서 버전 추출해 `src/version.py`에 기록(빌드 산출물에 반영, 커밋 안 함)
-3. ffmpeg(essentials) 다운로드 → `bin/`에 배치 (CI에는 ffmpeg가 없으므로)
-4. `python build.py all` 로 full + lite 빌드
-5. 산출물 zip 패키징
-   - `Y_Downloader-full-<버전>.zip` (폴더형, ffmpeg 포함)
-   - `Y_Downloader-lite-<버전>.zip` (단일 exe + `lite-ffmpeg-안내.md`)
-6. `softprops/action-gh-release`로 GitHub Release 생성 + zip 첨부(릴리스 노트 자동 생성)
+> 반드시 순서대로. **7번(main 반영)을 빼먹으면 main이 뒤처진다** — v0.3.0에서 실제로 누락됐었음.
 
-### 버전 올리기
+1. **dev 그린 확인** — 로컬에서 `pytest` 전체 통과(네트워크·e2e 제외는 기본값). dev push 후
+   `test.yml`도 초록인지 확인.
+2. **버전 결정** — 태그 규칙 `vMAJOR.MINOR.PATCH`. 새 기능=MINOR, 버그수정=PATCH.
+3. **로컬 버전 올려 커밋** — `src/version.py`의 `__version__`을 새 버전으로 바꿔 커밋하고 dev push.
+   (CI도 태그에서 버전을 다시 stamp하지만, 로컬 기본값을 맞춰두면 dev 실행/혼선 방지.)
+4. **주석 태그 생성** — 태그 메시지가 곧 릴리스 노트의 "변경사항"이 된다(§6-2 참고).
+   ```powershell
+   git tag -a v1.2.0 -m "- 기능 A 추가`n- 버그 B 수정"
+   git push origin v1.2.0
+   ```
+5. **CI(release.yml) 성공 확인** — 세 잡 모두 초록이어야 한다:
+   `test`(게이트) → `build-and-release`(Windows) + `build-macos`(macOS). 상태는 공개 API로 확인
+   (`api.github.com/repos/ITJEONG-DEV/Y_Download/actions/runs`).
+   - **실패 시**: 원인 수정 → dev에 커밋·push → `git tag -f -a v1.2.0 -m "…"` 로 태그를 새 커밋에
+     옮기고 `git push origin v1.2.0 --force`. (릴리스는 test 게이트 통과 전엔 발행 안 되므로 안전.)
+6. **릴리스 자산 확인** — Release에 4종이 붙었는지: `Y_Downloader-full-<v>.zip`,
+   `Y_Downloader-lite-<v>.zip`, `Y_Downloader-mac-<v>.dmg`, `Y_Downloader-mac-<v>.zip`.
+7. **main 반영 (필수)** — 릴리스는 dev 태그에서 나가므로, main을 릴리스 커밋까지 올린다.
+   보통 dev가 main보다 앞서기만 하므로 **fast-forward**로 충분(충돌 없음):
+   ```powershell
+   git checkout main; git merge --ff-only dev; git push origin main
+   git checkout dev
+   ```
+   (관례상 모든 릴리스 태그는 main 선상에 있어야 한다 — v0.1.8·v0.2.0·v0.3.0.)
+
+### 워크플로 동작 (`release.yml`)
+- **test** (windows-latest): 의존성 설치 → `pytest -m "not network and not e2e"`.
+  게이트 — 실패 시 아래 빌드 잡이 실행되지 않아 깨진 릴리스를 막는다.
+  (e2e는 실제 유튜브·ffmpeg가 필요해 CI에서 제외. `not network`만 쓰면 pyproject 기본값을 덮어써
+  e2e가 돌아 실패하므로 **반드시 `not network and not e2e`**.)
+- **build-and-release** (windows-latest, `needs: test`): 태그에서 버전 stamp →
+  ffmpeg essentials 받아 `bin/` 배치 → `python build.py all`(full+lite) → zip 패키징 →
+  태그 메시지로 릴리스 본문 구성 → `softprops/action-gh-release`로 Release 생성·첨부.
+- **build-macos** (macos-latest, `needs: test`): 정적 ffmpeg(arch 감지) 번들 →
+  `python build.py full`(.app) → `ditto` zip + `hdiutil` dmg → 같은 태그 릴리스에 자산만 추가.
+  (PyInstaller 크로스컴파일 불가 → macOS는 별도 러너 필수. 현재 arm64 단일, **서명·공증 없음**.)
+
+### 버전 올리기 메모
 - 평소 개발 중에는 `src/version.py`를 손댈 필요 없음(태그가 릴리스 버전을 결정).
-- 원하면 로컬 기본값도 함께 올려 커밋(예: `0.1.0` → `1.0.0`).
 - 태그 규칙: `vMAJOR.MINOR.PATCH` (예: `v1.2.0`).
 
 ---
@@ -244,13 +268,16 @@ git push origin v1.0.0     # -> Actions가 자동 빌드 & Release 발행
 - 실행 1.5초 후 백그라운드 스레드로 GitHub `releases/latest` 조회(패키지 빌드에서만, dev는 건너뜀).
 - 최신 태그가 현재 `__version__`보다 높으면 모달 표시:
   "새로운 버전이 릴리즈 되었습니다 / 현재 X → 새 버전 Y / 변경 내용(요약) / [확인] [나중에]".
-- **[확인]**: 현재 빌드 종류에 맞는 zip을 받아 도우미 배치(.bat)를 실행하고 앱 종료.
-  배치가 프로세스 종료를 기다렸다가(`ping` 지연 — 콘솔 없는 환경에서 `timeout` 실패 회피)
-  파일을 교체하고 재시작한다. 진단 로그: `%TEMP%/Y_Downloader_update.log`.
-  - `lite`: 실행 중 exe는 덮어쓰기 불가하므로 **이동(rename) 후 새 파일 복사** (부트로더 잠금 회피)
-  - `full`: 프로세스 완전 종료 후 폴더 덮어쓰기(`robocopy /E /R:5 /W:1`, 사용자 데이터 삭제 없음)
+- **[확인]**: 현재 빌드 종류에 맞는 zip을 받아 도우미 스크립트(Windows=PowerShell / macOS=bash)를
+  실행하고 앱 종료. 도우미가 프로세스 종료를 기다렸다가 파일을 교체하고 재시작한다.
+  진단 로그: `%TEMP%`(win)·`$TMPDIR`(mac)`/Y_Downloader_update.log`.
+  - `lite`(win): 실행 중 exe는 덮어쓰기 불가하므로 **이동(rename) 후 새 파일 복사** (부트로더 잠금 회피)
+  - `full`(win): 프로세스 완전 종료 후 폴더 덮어쓰기(사용자 데이터 삭제 없음)
+  - `mac`: bash가 `ditto -x -k`로 zip 해제(심볼릭 링크/권한 보존)해 `.app`을 통째 교체 후 `open`
+    재실행, 교체본의 `com.apple.quarantine` 제거. (Python `zipfile`은 `.app`을 손상시켜 사용 안 함.)
 - 변경 요약: 릴리스 본문의 `<!--CHANGES-->…<!--/CHANGES-->` 구간(= 태그 메시지)에서 추출.
-- 빌드 종류 판별: frozen + `_internal` 폴더 존재 → full, 아니면 lite, 비프리즈 → dev.
+- 빌드 종류 판별(`build_kind`): 비프리즈 → dev, macOS(.app) → mac,
+  frozen + `_internal` 폴더 존재 → full, 아니면 → lite.
 
 ### 릴리스 노트 변경요약 넣는 법
 릴리스는 **주석 태그 메시지**가 "이번 버전 변경사항"이 된다.

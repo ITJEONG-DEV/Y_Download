@@ -96,12 +96,13 @@ tests/
 
 | 워크플로 | 트리거 | 동작 |
 |----------|--------|------|
-| `.github/workflows/test.yml` | dev/main **push·PR** | `pytest -m "not network"` 실행 |
-| `.github/workflows/release.yml` | `v*` 태그 push | **`test` 잡 통과 후에만** 빌드/릴리스 (`needs: test`) |
+| `.github/workflows/test.yml` | dev/main **push·PR** | `pytest -m "not network and not e2e"` 실행 |
+| `.github/workflows/release.yml` | `v*` 태그 push | **`test` 잡 통과 후에만** Windows·macOS 빌드/릴리스 (`needs: test`) |
 
-- 두 워크플로 모두 `windows-latest` 에서 실행 → Tk GUI 스모크 테스트도 동작.
+- **테스트/게이트는 `windows-latest`**, macOS `.app` 빌드는 `release.yml`의 `build-macos`(`macos-latest`).
 - **배포 게이트**: 테스트가 깨지면 릴리스 빌드가 자동 중단되어, 깨진 채 배포되는 것을 막는다.
-- 네트워크 테스트는 CI에서 제외(불안정). 필요 시 로컬에서 `pytest -m network` 로 확인.
+- ⚠️ CI 필터는 반드시 **`not network and not e2e`** — `not network`만 쓰면 pyproject 기본값(`-m`)을
+  덮어써 e2e(실다운로드)가 CI에서 돌아 실패한다. 네트워크·e2e는 로컬에서 `pytest -m network`·`-m e2e`로 확인.
 
 ---
 

@@ -39,6 +39,7 @@ from downloader import (
     VideoInfo, PlaylistEntry,
     fetch_info, fetch_playlist, is_playlist_url, download,
     sanitize_filename, estimate_size, format_size, friendly_error,
+    DownloadCancelled,
     VIDEO_EXTS, AUDIO_EXTS, CONFLICT_POLICIES,
 )
 
@@ -538,6 +539,7 @@ class MainWindow(QMainWindow):
         self._bridge = _Bridge()
         self.rows: list[DownloadRow] = []
         self._downloading = False
+        self._cancel = threading.Event()
         self._add_request_id = 0
         self._add_pending = False
         self.download_dir = config.get_download_dir(
@@ -649,7 +651,7 @@ class MainWindow(QMainWindow):
         botbar.addWidget(self.progress, 1)
         self.download_btn = QPushButton("전체 다운로드")
         self.download_btn.setFixedWidth(140)
-        self.download_btn.clicked.connect(self.on_download_all)
+        self.download_btn.clicked.connect(self.on_download_click)
         botbar.addWidget(self.download_btn)
         outer.addLayout(botbar)
 
@@ -941,6 +943,21 @@ class MainWindow(QMainWindow):
         return "number"
 
     # ------------------------------------------------------ 다운로드
+    def on_download_click(self):
+        """다운로드 버튼: 대기 중이면 시작, 진행 중이면 취소."""
+        if self._downloading:
+            self.on_cancel()
+        else:
+            self.on_download_all()
+
+    def on_cancel(self):
+        if not self._downloading or self._cancel.is_set():
+            return
+        self._cancel.set()
+        self.download_btn.setEnabled(False)
+        self.download_btn.setText("취소 중...")
+        self._set_status("취소 중... 현재 항목을 정리합니다.")
+
     def on_download_all(self):
         if self._downloading:
             return
@@ -954,8 +971,8 @@ class MainWindow(QMainWindow):
         config.set_download_dir(out_dir)
 
         self._downloading = True
-        self.download_btn.setEnabled(False)
-        self.download_btn.setText("다운로드 중...")
+        self._cancel.clear()
+        self.download_btn.setText("취소")  # 진행 중에는 취소 버튼으로
         self.add_btn.setEnabled(False)
         self.clear_list_btn.setEnabled(False)
         self._set_bulk_enabled(False)
@@ -976,8 +993,12 @@ class MainWindow(QMainWindow):
     def _download_all_worker(self, jobs, out_dir):
         total = len(jobs)
         success = 0
+        cancelled = False
         for idx, job in enumerate(jobs, start=1):
             row, params = job["row"], job["params"]
+            if self._cancel.is_set():  # 다음 항목 시작 전 취소 확인
+                cancelled = True
+                break
             self._post(lambda r=row: r.set_status("다운로드 중...", "#3d8fd6"))
             self._post(lambda i=idx: self._set_status(f"[{i}/{total}] 다운로드 중..."))
             self._post(lambda i=idx: self._set_progress((i - 1) / total))
@@ -985,6 +1006,8 @@ class MainWindow(QMainWindow):
             status, message, saved_name = "성공", "", None
             try:
                 def hook(d, r=row, i=idx):
+                    if self._cancel.is_set():   # 진행 중 취소 → yt-dlp 중단
+                        raise DownloadCancelled()
                     self._item_progress(d, r, i, total)
                 result = download(output_dir=out_dir, progress_callback=hook, **params)
                 success += 1
@@ -998,11 +1021,20 @@ class MainWindow(QMainWindow):
                 else:
                     self._post(lambda r=row: r.set_status("완료 ✓", "#4caf50"))
             except Exception as e:
+                # 취소는 yt-dlp가 다른 예외로 감쌀 수 있으므로 플래그로 판정(내역 기록 안 함).
+                if self._cancel.is_set() or isinstance(e, DownloadCancelled):
+                    cancelled = True
+                    break
                 status, message = "실패", friendly_error(e)
                 self._post(lambda r=row: r.set_status("실패", "#e57373"))
                 self._post(lambda m=message: self._set_status(f"실패: {m}"))
             self._record_history(job, params, status, message, saved_name)
-        self._post(lambda: self._on_all_done(success, total))
+
+        if cancelled:
+            # 처리 못한 항목(현재 포함 이후 전부)을 '취소됨'으로 표시
+            for r in (j["row"] for j in jobs[idx - 1:]):
+                self._post(lambda r=r: r.set_status("취소됨", "gray"))
+        self._post(lambda: self._on_all_done(success, total, cancelled))
 
     def _item_progress(self, d: dict, row: DownloadRow, idx: int, total: int):
         if d.get("status") == "downloading":
@@ -1040,9 +1072,10 @@ class MainWindow(QMainWindow):
         except Exception:
             return None
 
-    def _on_all_done(self, success: int, total: int):
+    def _on_all_done(self, success: int, total: int, cancelled: bool = False):
         self._downloading = False
-        self._set_progress(1.0)
+        self._cancel.clear()
+        self._set_progress(1.0 if not cancelled else 0.0)
         self.download_btn.setEnabled(True)
         self.download_btn.setText("전체 다운로드")
         self.add_btn.setEnabled(True)
@@ -1050,7 +1083,10 @@ class MainWindow(QMainWindow):
         self._set_bulk_enabled(True)
         for row in self.rows:
             row.set_controls_enabled(True)
-        self._set_status(f"완료: {success}/{total}개 다운로드됨")
+        if cancelled:
+            self._set_status(f"취소됨: {success}/{total}개 완료 후 중단")
+        else:
+            self._set_status(f"완료: {success}/{total}개 다운로드됨")
         # 내역 갱신(패널이 열려 있으면 즉시 반영)
         if self.history_dock.isVisible():
             self.history_panel.render()

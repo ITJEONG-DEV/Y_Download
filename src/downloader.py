@@ -369,6 +369,11 @@ CONFLICT_SKIP = "skip"            # 이미 있으면 다운로드 건너뜀
 CONFLICT_POLICIES = (CONFLICT_NUMBER, CONFLICT_OVERWRITE, CONFLICT_SKIP)
 
 
+class DownloadCancelled(Exception):
+    """진행 중 다운로드를 사용자가 취소했음을 알리는 신호.
+    progress_callback 안에서 이 예외를 던지면 yt-dlp가 현재 다운로드를 중단한다."""
+
+
 @dataclass
 class DownloadResult:
     path: str

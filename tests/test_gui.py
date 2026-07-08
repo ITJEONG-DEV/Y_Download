@@ -127,6 +127,43 @@ def test_bulk_apply_empty_list_is_noop(qapp, main):
     assert "없습니다" in main.status_label.text()
 
 
+# --------------------------------------------------------------- 다운로드 취소
+def test_cancel_download(qapp, main, isolated_config, monkeypatch, tmp_path):
+    import app as app_qt
+    from downloader import DownloadResult, DownloadCancelled
+    from downloader import PlaylistEntry
+
+    main._add_playlist_entries([PlaylistEntry(url=f"https://y/watch?v={c}", title=c, duration=5)
+                                for c in ("a", "b")])
+    _pump(qapp, lambda: main._enrich_pending == 0)
+    main.dir_entry.setText(str(tmp_path))
+
+    # 진행률 훅을 반복 호출하며 취소 신호(훅에서 DownloadCancelled)가 오길 기다리는 가짜 다운로드
+    def fake_download(output_dir, progress_callback=None, **params):
+        for _ in range(2000):
+            if progress_callback:
+                progress_callback({"status": "downloading",
+                                   "total_bytes": 100, "downloaded_bytes": 1})
+            time.sleep(0.005)
+        return DownloadResult(path=str(tmp_path / "x.mp4"), status="downloaded")
+
+    monkeypatch.setattr(app_qt, "download", fake_download)
+
+    main.on_download_all()
+    assert main._downloading and main.download_btn.text() == "취소"
+    # 첫 항목이 실제로 진행(%) 상태가 될 때까지 대기
+    _pump(qapp, lambda: "%" in main.rows[0].status_label.text())
+
+    main.on_cancel()
+    _pump(qapp, lambda: not main._downloading)
+
+    # 큐 중단 + 상태/버튼 원복 + 미처리 항목 '취소됨' + 취소 항목은 내역 미기록
+    assert "취소" in main.status_label.text()
+    assert main.download_btn.text() == "전체 다운로드"
+    assert all(r.status_label.text() == "취소됨" for r in main.rows)
+    assert isolated_config.load_history() == []
+
+
 # --------------------------------------------------------------- 내역 패널
 def test_history_toggle_and_widen(qapp, main, isolated_config):
     isolated_config.add_history({"title": "영상A", "filename": "fileA", "status": "성공",

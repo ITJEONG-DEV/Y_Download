@@ -315,17 +315,21 @@ git push origin v1.2.0
   > 위 "내역 렌더 성능 — 가상 스크롤" 등 CTk 시절 메모는 역사적 기록(현재는 Qt 네이티브 스크롤).
 
 ### 다음 할 일 (우선순위 순)
-- [ ] (후속) **macOS 배포** — 현재 Windows 전용(exe). Qt 전환으로 UI는 크로스플랫폼이 되므로
-  아래를 갖추면 Mac 지원 가능:
-  - PyInstaller는 **크로스컴파일 불가** → macOS에서 빌드해야 함. GitHub Actions `macos-latest`
-    러너로 `.app`(+`.dmg`) 빌드 잡 추가(현 `release.yml`은 windows-latest 전용).
-  - **ffmpeg/ffprobe의 macOS(arm64/x86_64) 바이너리** 확보·번들. `_ffmpeg_location`에 .app
-    내부(`Contents/MacOS`, `Contents/Frameworks`) 및 실행파일 옆 탐색 경로 추가.
-  - **코드 서명 + 공증(notarization)** — Gatekeeper 통과용(Apple Developer 인증서 필요). 없으면
-    사용자가 "확인되지 않은 개발자" 경고를 수동 우회해야 함.
-  - `os.startfile`(Windows 전용) 등 플랫폼 종속 코드 분기(macOS는 `open`), 경로/설정 폴더 점검.
-  - 자동 업데이트(`updater.py`)의 교체 스크립트가 PowerShell 기반 → macOS는 shell 스크립트 별도 필요.
-  - 유니버설(arm64+x86_64) 또는 아키텍처별 2종 배포 결정.
+- [~] (후속) **macOS 배포** — 현재 Windows 전용(exe). Qt 전환으로 UI는 크로스플랫폼.
+  진행 상황:
+  - [x] **크로스플랫폼 런타임 코드** (Windows에서 단위 테스트 `tests/test_platform.py`로 검증):
+    - `config._default_app_dir()` — OS별 설정 폴더(Windows `%APPDATA%` 유지 / macOS
+      `~/Library/Application Support` / Linux `$XDG_CONFIG_HOME`·`~/.config`).
+    - `downloader._ffmpeg_location`/`_ffmpeg_names` — 실행파일명(`ffmpeg` vs `ffmpeg.exe`),
+      macOS `.app`(`Contents/Frameworks`·`Resources[/ffmpeg]`) 탐색, `isfile`로 폴더 오인 방지.
+    - `app._open_in_file_manager` — 폴더 열기(Windows `startfile`/macOS `open`/Linux `xdg-open`).
+  - [ ] `build.py` macOS `.app` 빌드 분기 + **ffmpeg/ffprobe macOS(arm64/x86_64) 바이너리** 번들.
+  - [ ] GitHub Actions `macos-latest` 러너로 `.app`(+`.dmg`) 빌드 잡 추가(현 `release.yml`은 win 전용).
+    PyInstaller는 **크로스컴파일 불가** → macOS에서 빌드해야 함. (이 PC(Windows)에서는 검증 불가.)
+  - [ ] 자동 업데이트(`updater.py`)의 교체 스크립트가 PowerShell 기반 → macOS는 shell 스크립트 별도 필요.
+  - [ ] **코드 서명 + 공증(notarization)** — Gatekeeper 통과용(Apple Developer 인증서 필요, $99/년).
+    없으면 사용자가 "확인되지 않은 개발자" 경고를 수동 우회해야 함.
+  - [ ] 유니버설(arm64+x86_64) 또는 아키텍처별 2종 배포 결정.
 - [x] 다운로드 목록 상단 **포맷/확장자/품질 일괄 변경** 바 (재생목록 대량 추가 대비).
   URL 바 아래에 `일괄 적용` 바(포맷·확장자·품질 + [전체 적용]) 배치. 영상 품질은 **'≤ 목표 해상도'**
   로 각 행의 실제 가용 해상도 중 최적을 선택(정확히 일치하지 않아도 됨), 음원은 비트레이트 직접 적용.

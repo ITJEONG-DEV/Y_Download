@@ -15,6 +15,19 @@
 
 ---
 
+## 2026-07-08 · dev — macOS 배포: 크로스플랫폼 런타임 코드
+- **테스트한 항목** (`tests/test_platform.py`, sys.platform 목킹):
+  - `config._default_app_dir`: Windows(%APPDATA% 유지)/macOS(Library/Application Support)/
+    Linux(XDG·기본) 4분기.
+  - `downloader._ffmpeg_names`/`_ffmpeg_location`: 실행파일명 분기, macOS `.app` 번들 경로 탐색,
+    현재 플랫폼 반환값 무결성(실제 실행파일 존재).
+  - `app._open_in_file_manager`: Windows `startfile`/macOS `open`/Linux `xdg-open` 디스패치.
+- **결과**: 82 passed, 3 deselected. (플랫폼 단위 +12건, Windows 회귀 영향 없음)
+- **미흡 → 개선**:
+  - `_ffmpeg_location`이 `os.path.exists`라 'ffmpeg'라는 **하위 폴더**도 실행파일로 오인 →
+    `os.path.isfile`로 좁혀 해결(테스트가 드러냄).
+  - 경로 기대값을 리터럴로 적어 Windows 구분자와 불일치 → `os.path.join`으로 구성해 이식성 확보.
+
 ## 2026-07-08 · dev — 다운로드 취소 버튼
 - **테스트한 항목**:
   - (GUI) 진행 중(훅이 %를 갱신하는 가짜 다운로드) → `on_cancel` → 큐 중단.

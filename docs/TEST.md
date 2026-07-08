@@ -63,6 +63,7 @@ tests/
 ├── test_downloader.py    # ① 파일명 정리/URL 판별/크기추정/유니크이름/재생목록 파싱
 ├── test_config.py        # ① 설정·내역 JSON 저장(임시 폴더 격리)
 ├── test_updater.py       # ① 버전 비교·요약 추출·자산 선택(네트워크 목킹)
+├── test_platform.py      # ① 크로스플랫폼 분기(설정폴더/ffmpeg 경로/폴더 열기, sys.platform 목킹)
 ├── test_gui.py           # ② (Qt) 목록 추가/삭제/내역 패널 토글·폭확장·1줄축약
 ├── test_e2e_qt.py        # ②④ qtbot 클릭-투-엔드(목킹, gui) + 실제 다운로드(e2e)
 └── test_network.py       # ③ 실제 fetch_info / fetch_playlist
@@ -128,4 +129,6 @@ tests/
 - **app(GUI)**: 재생목록 즉시추가→개별조회 갱신, 단일 추가, 내역 패널 토글·폭확장·1줄축약,
   일괄 적용 바(영상/음원·확장자·'≤ 목표 해상도' 매핑), 다운로드 취소(큐 중단·미처리 '취소됨'),
   qtbot 클릭-투-엔드.
+- **platform**: OS별 설정 폴더(`_default_app_dir`), ffmpeg 실행파일명/위치(`_ffmpeg_names`/
+  `_ffmpeg_location`, macOS `.app` 포함), 폴더 열기 디스패치(`_open_in_file_manager`).
 - **network(수동)**: 실제 `fetch_info` / `fetch_playlist`.

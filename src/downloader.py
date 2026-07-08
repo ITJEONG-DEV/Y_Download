@@ -75,16 +75,25 @@ ProgressCallback = Callable[[dict], None]
 # ---------------------------------------------------------------------------
 # ffmpeg 위치 탐색 (개발 환경 + PyInstaller 번들 환경 모두 지원)
 # ---------------------------------------------------------------------------
+def _ffmpeg_names() -> tuple[str, str]:
+    """(ffmpeg, ffprobe) 실행파일 이름. Windows만 .exe 확장자."""
+    if sys.platform == "win32":
+        return "ffmpeg.exe", "ffprobe.exe"
+    return "ffmpeg", "ffprobe"
+
+
 def _ffmpeg_location() -> Optional[str]:
     """
-    ffmpeg.exe가 있는 디렉터리를 찾아 반환한다. 못 찾으면 None을 반환해
+    ffmpeg 실행파일이 있는 디렉터리를 찾아 반환한다. 못 찾으면 None을 반환해
     yt-dlp가 시스템 PATH에서 ffmpeg를 찾도록 둔다.
 
     탐색 우선순위:
-      1) PyInstaller 번들(폴더형 exe): sys._MEIPASS/ffmpeg, sys._MEIPASS
-      2) 실행 파일 옆(라이트형 exe 사용자가 직접 배치): <exe>/, <exe>/ffmpeg, <exe>/bin
+      1) PyInstaller 번들(폴더형): sys._MEIPASS/ffmpeg, sys._MEIPASS
+      2) 실행 파일 옆(사용자가 직접 배치): <exe>/, <exe>/ffmpeg, <exe>/bin
+         - macOS .app 번들이면 Contents/Frameworks, Contents/Resources[/ffmpeg]도 탐색
       3) 개발 환경: 프로젝트 ../bin
     """
+    exe_name = _ffmpeg_names()[0]
     candidates: list[str] = []
 
     # 1) 번들(폴더형)에 포함된 ffmpeg
@@ -92,7 +101,7 @@ def _ffmpeg_location() -> Optional[str]:
     if base:
         candidates += [os.path.join(base, "ffmpeg"), base]
 
-    # 2) 얼어있는(frozen) exe 옆 — 라이트형에서 사용자가 직접 넣는 경우
+    # 2) 얼어있는(frozen) 실행파일 옆 — 사용자가 직접 넣는 경우
     if getattr(sys, "frozen", False):
         exe_dir = os.path.dirname(sys.executable)
         candidates += [
@@ -100,6 +109,14 @@ def _ffmpeg_location() -> Optional[str]:
             os.path.join(exe_dir, "ffmpeg"),
             os.path.join(exe_dir, "bin"),
         ]
+        # macOS .app: 실행파일은 <App>.app/Contents/MacOS/ 에 있고, 번들 리소스는 형제 폴더에 둔다.
+        if sys.platform == "darwin":
+            contents = os.path.dirname(exe_dir)  # .../Contents
+            candidates += [
+                os.path.join(contents, "Frameworks"),
+                os.path.join(contents, "Resources"),
+                os.path.join(contents, "Resources", "ffmpeg"),
+            ]
 
     # 3) 개발 환경: 프로젝트 로컬 bin/
     candidates.append(
@@ -109,7 +126,8 @@ def _ffmpeg_location() -> Optional[str]:
     )
 
     for d in candidates:
-        if d and os.path.exists(os.path.join(d, "ffmpeg.exe")):
+        # isfile: 'ffmpeg'라는 이름의 하위 폴더가 있어도 실행파일로 오인하지 않도록
+        if d and os.path.isfile(os.path.join(d, exe_name)):
             return d
 
     return None  # 시스템 PATH 사용

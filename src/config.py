@@ -2,18 +2,33 @@
 config.py
 ---------
 사용자 설정(마지막 저장 위치 등)과 다운로드 내역을 JSON 파일로 영구 저장한다.
-저장 위치: %APPDATA%/Y_Downloader/  (없으면 홈 디렉터리)
+저장 위치(OS별):
+  - Windows: %APPDATA%/Y_Downloader/
+  - macOS:   ~/Library/Application Support/Y_Downloader/
+  - Linux:   $XDG_CONFIG_HOME/Y_Downloader/ (없으면 ~/.config/Y_Downloader/)
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sys
 import uuid
 
-_APP_DIR = os.path.join(
-    os.environ.get("APPDATA") or os.path.expanduser("~"), "Y_Downloader"
-)
+
+def _default_app_dir() -> str:
+    """OS 규약에 맞는 앱 데이터 폴더. Windows는 기존과 동일(%APPDATA%)로 호환 유지."""
+    home = os.path.expanduser("~")
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or home
+    elif sys.platform == "darwin":
+        base = os.path.join(home, "Library", "Application Support")
+    else:  # linux 및 기타 유닉스
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+    return os.path.join(base, "Y_Downloader")
+
+
+_APP_DIR = _default_app_dir()
 _SETTINGS_PATH = os.path.join(_APP_DIR, "settings.json")
 _HISTORY_PATH = os.path.join(_APP_DIR, "history.json")
 _THUMBS_DIR = os.path.join(_APP_DIR, "thumbs")

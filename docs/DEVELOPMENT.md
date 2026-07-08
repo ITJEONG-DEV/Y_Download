@@ -218,7 +218,8 @@ python build.py lite      # 라이트만
 
 ### ✅ 릴리스 체크리스트 (매 릴리스 이 순서대로)
 
-> 반드시 순서대로. **7번(main 반영)을 빼먹으면 main이 뒤처진다** — v0.3.0에서 실제로 누락됐었음.
+> 순서대로 진행. **7번(main 반영)은 이제 CI가 자동 처리**하지만(v0.3.0에서 누락됐던 이력),
+> 자동 fast-forward가 불가능(분기)하면 CI가 경고만 남기므로 그때는 수동으로 반영한다.
 
 1. **dev 그린 확인** — 로컬에서 `pytest` 전체 통과(네트워크·e2e 제외는 기본값). dev push 후
    `test.yml`도 초록인지 확인.
@@ -237,13 +238,14 @@ python build.py lite      # 라이트만
      옮기고 `git push origin v1.2.0 --force`. (릴리스는 test 게이트 통과 전엔 발행 안 되므로 안전.)
 6. **릴리스 자산 확인** — Release에 4종이 붙었는지: `Y_Downloader-full-<v>.zip`,
    `Y_Downloader-lite-<v>.zip`, `Y_Downloader-mac-<v>.dmg`, `Y_Downloader-mac-<v>.zip`.
-7. **main 반영 (필수)** — 릴리스는 dev 태그에서 나가므로, main을 릴리스 커밋까지 올린다.
-   보통 dev가 main보다 앞서기만 하므로 **fast-forward**로 충분(충돌 없음):
-   ```powershell
-   git checkout main; git merge --ff-only dev; git push origin main
-   git checkout dev
-   ```
-   (관례상 모든 릴리스 태그는 main 선상에 있어야 한다 — v0.1.8·v0.2.0·v0.3.0.)
+7. **main 반영 — 자동** — `release.yml`의 `update-main` 잡이 두 빌드 성공 후 main을 릴리스
+   커밋으로 **fast-forward**하고 push한다(관례: 릴리스 코드 = main, v0.1.8·v0.2.0·v0.3.0).
+   - fast-forward 불가(main이 분기됨)면 CI가 `::warning::`만 남기고 실패하지 않으므로, 이때만 수동:
+     ```powershell
+     git checkout main; git merge --ff-only dev; git push origin main; git checkout dev
+     ```
+   - GITHUB_TOKEN push라 test.yml을 재트리거하지 않는다(무한루프 방지). main 브랜치 보호가 켜져 있으면
+     자동 push가 막힐 수 있으니 그 경우에도 위 수동 절차 사용.
 
 ### 워크플로 동작 (`release.yml`)
 - **test** (windows-latest): 의존성 설치 → `pytest -m "not network and not e2e"`.

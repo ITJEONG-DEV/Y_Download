@@ -182,3 +182,34 @@ jobs:
           files: |
             release/*.zip
             release/*.dmg
+
+  # 릴리스 성공 후 main을 릴리스 커밋까지 fast-forward한다(관례: 릴리스 코드 = main).
+  # 두 빌드가 모두 성공했을 때만 실행. fast-forward가 불가능(분기)하면 경고만 남기고 실패하지 않는다.
+  update-main:
+    needs: [build-and-release, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fast-forward main to release tag
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          tag="${GITHUB_REF_NAME}"
+          git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
+          tag_sha="$(git rev-parse "${tag}^{commit}")"
+          if [ "$(git rev-parse HEAD)" = "$tag_sha" ]; then
+            echo "main은 이미 ${tag}(${tag_sha}) 상태입니다. 건너뜀."
+          elif git merge-base --is-ancestor HEAD "$tag_sha"; then
+            git merge --ff-only "$tag_sha"
+            git push origin HEAD:main
+            echo "main -> ${tag} (${tag_sha}) fast-forward 완료."
+          else
+            echo "::warning::main을 ${tag} 로 fast-forward할 수 없습니다(분기됨). 수동 병합이 필요합니다."
+          fi
